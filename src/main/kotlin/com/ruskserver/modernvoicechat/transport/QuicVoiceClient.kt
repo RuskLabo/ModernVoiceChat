@@ -44,7 +44,7 @@ class QuicVoiceClient(
             conn.connect()
             connection = conn
             running = true
-            logger.info("kwik Pure Java QUIC Client connected to $serverAddress for player $playerUuid")
+            logger.info("kwik Pure Java QUIC Client connected to voice server (port: ${serverAddress.port}) for player $playerUuid")
         } catch (e: Exception) {
             logger.error("Failed to start kwik QUIC Client", e)
             stop()

@@ -67,7 +67,7 @@ object ClientVoiceManager {
         recorder?.start()
         voiceClient?.start()
         isConnected = true
-        logger.info("ClientVoiceManager connected to $serverAddress")
+        logger.info("ClientVoiceManager connected to voice server (port: ${serverAddress.port})")
 
         PacketDistributor.sendToServer(ModNetwork.C2SVoiceSecretPayload(secretToken))
         voiceClient?.sendHandshake(localPlayer.x, localPlayer.y, localPlayer.z)
