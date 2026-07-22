@@ -29,6 +29,7 @@ class FirstTimeTutorialScreen(
     private var speakerButton: Button? = null
     private var inputModeButton: Button? = null
     private var vadThresholdButton: Button? = null
+    private var micVolumeButton: Button? = null
 
     private val availableMics by lazy { AudioDeviceUtils.getAvailableMicrophones() }
     private val availableSpeakers by lazy { AudioDeviceUtils.getAvailableSpeakers() }
@@ -68,11 +69,13 @@ class FirstTimeTutorialScreen(
         speakerButton?.let { this.removeWidget(it) }
         inputModeButton?.let { this.removeWidget(it) }
         vadThresholdButton?.let { this.removeWidget(it) }
+        micVolumeButton?.let { this.removeWidget(it) }
 
         micButton = null
         speakerButton = null
         inputModeButton = null
         vadThresholdButton = null
+        micVolumeButton = null
     }
 
     private fun rebuildStepWidgets() {
@@ -137,6 +140,17 @@ class FirstTimeTutorialScreen(
                         }.bounds(centerX - 110, centerY - 20, 220, 20).build()
                     )
                 }
+
+                // マイク音量調整ボタン
+                micVolumeButton = this.addRenderableWidget(
+                    Button.builder(Component.literal("🎤 マイク音量: ${VoiceConfig.micVolumePercentage}%")) { btn ->
+                        val levels = listOf(0, 50, 75, 100, 125, 150, 200)
+                        val currentIndex = levels.indexOf(VoiceConfig.micVolumePercentage).coerceAtLeast(0)
+                        val nextLevel = levels[(currentIndex + 1) % levels.size]
+                        VoiceConfig.micVolumePercentage = nextLevel
+                        btn.message = Component.literal("🎤 マイク音量: ${VoiceConfig.micVolumePercentage}%")
+                    }.bounds(centerX - 110, centerY + 5, 220, 20).build()
+                )
             }
         }
     }
