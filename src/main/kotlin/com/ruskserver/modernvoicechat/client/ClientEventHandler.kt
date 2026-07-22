@@ -32,4 +32,22 @@ object ClientEventHandler {
             mc.player?.displayClientMessage(net.minecraft.network.chat.Component.translatable(msg), true)
         }
     }
+
+    @SubscribeEvent
+    fun onLeftClickEmpty(event: net.neoforged.neoforge.event.entity.player.PlayerInteractEvent.LeftClickEmpty) {
+        val stack = event.itemStack
+        if (stack.item is com.ruskserver.modernvoicechat.item.RadioItem) {
+            com.ruskserver.modernvoicechat.client.gui.RadioScreen.open()
+        }
+    }
+
+    @SubscribeEvent
+    fun onLeftClickBlock(event: net.neoforged.neoforge.event.entity.player.PlayerInteractEvent.LeftClickBlock) {
+        val stack = event.itemStack
+        if (stack.item is com.ruskserver.modernvoicechat.item.RadioItem) {
+            if (event.level.isClientSide) {
+                com.ruskserver.modernvoicechat.client.gui.RadioScreen.open()
+            }
+        }
+    }
 }

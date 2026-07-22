@@ -18,12 +18,13 @@ class RadioItem(properties: Properties) : Item(properties) {
 
     override fun use(level: Level, player: Player, hand: InteractionHand): InteractionResultHolder<ItemStack> {
         val stack = player.getItemInHand(hand)
-        if (level.isClientSide) {
-            // クライアント側で周波数設定 UI を起動
-            com.ruskserver.modernvoicechat.client.gui.RadioScreen.open()
-        }
-        return InteractionResultHolder.sidedSuccess(stack, level.isClientSide)
+        player.startUsingItem(hand)
+        return InteractionResultHolder.consume(stack)
     }
+
+    override fun getUseDuration(stack: ItemStack, entity: net.minecraft.world.entity.LivingEntity): Int = 72000
+
+    override fun getUseAnimation(stack: ItemStack): net.minecraft.world.item.UseAnim = net.minecraft.world.item.UseAnim.SPYGLASS
 
     override fun appendHoverText(
         stack: ItemStack,
@@ -33,7 +34,8 @@ class RadioItem(properties: Properties) : Item(properties) {
     ) {
         val freq = getFrequency(stack)
         tooltipComponents.add(Component.literal("§7周波数: §b${String.format("%.2f", freq)} MHz"))
-        tooltipComponents.add(Component.literal("§8[右クリック] 周波数・チャンネル設定"))
+        tooltipComponents.add(Component.literal("§8[右クリック長押し] 無線送信 (PTT)"))
+        tooltipComponents.add(Component.literal("§8[左クリック] 周波数・チャンネル設定"))
         super.appendHoverText(stack, context, tooltipComponents, tooltipFlag)
     }
 

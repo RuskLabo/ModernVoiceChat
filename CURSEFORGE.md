@@ -45,9 +45,9 @@ Unlike traditional voice mods that rely on OS-specific C/C++ native libraries or
 ## 📻 How to Use the Radio
 
 1. Craft or acquire the **Radio** item in-game.
-2. Hold the Radio and **[Right-Click]** to open the Frequency Configuration Screen.
-3. Set your desired frequency (e.g. `144.00`).
-4. Any player tuned to the same frequency can talk and listen over long distances (up to 1,000 blocks)!
+2. **Transmit (PTT)**: Hold the Radio and **[Hold Right-Click]** to transmit your voice over the radio frequency.
+3. **Configure Frequency**: Hold the Radio and **[Left-Click]** to open the Frequency Configuration Screen (e.g. `144.00 MHz`).
+4. **Receive**: Simply keep the Radio in your hands or inventory to **always receive** incoming radio transmissions on your frequency!
 
 ---
 

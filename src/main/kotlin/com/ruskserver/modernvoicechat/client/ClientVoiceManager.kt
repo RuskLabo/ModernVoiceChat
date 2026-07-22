@@ -173,14 +173,15 @@ object ClientVoiceManager {
         }
 
         val isPttPressed = KeyMappings.PUSH_TO_TALK.isDown
+        val isHoldingRadio = localPlayer.isUsingItem && localPlayer.useItem.item is com.ruskserver.modernvoicechat.item.RadioItem
         var anySpeaking = false
 
-        // ネットワーク送信はキューを全消費してOK（ネットワーク経路への追記なので音飛びしない）
+        // ネットワーク送信はキューを全消費してOK
         while (true) {
             val framePair = recorder?.readFrame() ?: break
             val (pcm, isSpeaking) = framePair
 
-            val shouldTransmit = when (VoiceConfig.inputMode) {
+            val shouldTransmit = isHoldingRadio || when (VoiceConfig.inputMode) {
                 VoiceConfig.InputMode.PUSH_TO_TALK -> isPttPressed
                 VoiceConfig.InputMode.VOICE_ACTIVATION -> isSpeaking
             }
@@ -189,7 +190,18 @@ object ClientVoiceManager {
                 anySpeaking = true
                 val encodedOpus = encoder?.encode(pcm, 960)
                 if (encodedOpus != null && encodedOpus.isNotEmpty()) {
-                    voiceClient?.sendAudioFrame(encodedOpus, localPlayer.x, localPlayer.y, localPlayer.z)
+                    // 無線機持続長押し中であれば isRadio パケットを優先送信
+                    val packet = VoicePacket(
+                        senderUuid = localPlayer.uuid,
+                        sequenceNumber = System.currentTimeMillis(),
+                        opusData = encodedOpus,
+                        posX = localPlayer.x,
+                        posY = localPlayer.y,
+                        posZ = localPlayer.z,
+                        isRadio = isHoldingRadio,
+                        quality = 1.0f
+                    )
+                    voiceClient?.sendHandler?.invoke(packet)
                 }
             }
         }
