@@ -19,5 +19,7 @@
   "message.modernvoicechat.mic_muted": "マイクをミュートしました",
   "message.modernvoicechat.mic_unmuted": "マイクのミュートを解除しました",
   "message.modernvoicechat.speaker_muted": "スピーカーをミュートしました",
-  "message.modernvoicechat.speaker_unmuted": "スピーカーのミュートを解除しました"
+  "message.modernvoicechat.speaker_unmuted": "スピーカーのミュートを解除しました",
+  "itemGroup.modernvoicechat": "ModernVoiceChat",
+  "item.modernvoicechat.radio": "無線機"
 }

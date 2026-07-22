@@ -44,6 +44,7 @@ object Modernvoicechat {
         }
 
         com.ruskserver.modernvoicechat.item.ModItems.register(MOD_BUS)
+        com.ruskserver.modernvoicechat.item.ModCreativeTabs.register(MOD_BUS)
 
         MOD_BUS.addListener(this::registerPayloads)
         MOD_BUS.addListener(this::registerKeyMappings)

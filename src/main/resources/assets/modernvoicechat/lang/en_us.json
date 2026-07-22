@@ -19,5 +19,7 @@
   "message.modernvoicechat.mic_muted": "Microphone Muted",
   "message.modernvoicechat.mic_unmuted": "Microphone Unmuted",
   "message.modernvoicechat.speaker_muted": "Speaker Muted",
-  "message.modernvoicechat.speaker_unmuted": "Speaker Unmuted"
+  "message.modernvoicechat.speaker_unmuted": "Speaker Unmuted",
+  "itemGroup.modernvoicechat": "ModernVoiceChat",
+  "item.modernvoicechat.radio": "Radio"
 }
