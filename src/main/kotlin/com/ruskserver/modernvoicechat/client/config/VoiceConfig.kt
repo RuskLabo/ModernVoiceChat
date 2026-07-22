@@ -35,7 +35,8 @@ object VoiceConfig {
         var micVolumePercentage: Int = 100,
         var speakerVolumePercentage: Int = 100,
         var selectedMicrophoneDevice: String = AudioDeviceUtils.DEFAULT_DEVICE,
-        var selectedSpeakerDevice: String = AudioDeviceUtils.DEFAULT_DEVICE
+        var selectedSpeakerDevice: String = AudioDeviceUtils.DEFAULT_DEVICE,
+        var isTutorialCompleted: Boolean = false
     )
 
     private var data = ConfigData()
@@ -63,6 +64,10 @@ object VoiceConfig {
     var selectedSpeakerDevice: String
         get() = data.selectedSpeakerDevice
         set(value) { data.selectedSpeakerDevice = value }
+
+    var isTutorialCompleted: Boolean
+        get() = data.isTutorialCompleted
+        set(value) { data.isTutorialCompleted = value }
 
     // ランタイム状態
     var isMicMuted: Boolean = false
@@ -109,6 +114,17 @@ object VoiceConfig {
         val deviceCategory: ConfigCategory = builder.getOrCreateCategory(Component.translatable("category.modernvoicechat.devices"))
 
         // --- オーディオ設定カテゴリー ---
+
+        // チュートリアル起動ボタン
+        audioCategory.addEntry(
+            entryBuilder.startBooleanToggle(
+                Component.literal("🔰 初回セットアップガイドを再起動"),
+                false
+            )
+            .setTooltip(Component.literal("マイクデバイスやボリュームテストを順番に行うガイド画面を起動します"))
+            .setSaveConsumer { if (it) com.ruskserver.modernvoicechat.client.gui.FirstTimeTutorialScreen.open(builder.build()) }
+            .build()
+        )
 
         // 入力モード切替
         audioCategory.addEntry(

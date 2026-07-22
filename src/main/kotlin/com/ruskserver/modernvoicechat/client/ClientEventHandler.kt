@@ -50,4 +50,13 @@ object ClientEventHandler {
             }
         }
     }
+
+    @SubscribeEvent
+    fun onLoggingIn(event: net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent.LoggingIn) {
+        if (!VoiceConfig.isTutorialCompleted) {
+            Minecraft.getInstance().tell {
+                com.ruskserver.modernvoicechat.client.gui.FirstTimeTutorialScreen.open()
+            }
+        }
+    }
 }
