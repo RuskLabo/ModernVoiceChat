@@ -1,0 +1,31 @@
+# Gradle & Build outputs
+.gradle/
+build/
+out/
+bin/
+
+# Kotlin Temporary & Cache files
+.kotlin/
+.kotlin-script/
+
+# Minecraft Run directory (saves, logs, configs)
+run/
+logs/
+*.log
+
+# IDE & Editor files
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Temporary certificates & keys
+certs/
+*.pem
+*.crt
+*.key

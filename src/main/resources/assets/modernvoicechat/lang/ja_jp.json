@@ -1,0 +1,23 @@
+{
+  "key.categories.modernvoicechat": "ModernVoiceChat",
+  "key.modernvoicechat.open_settings": "ボイスチャット設定画面を開く",
+  "key.modernvoicechat.mute_mic": "マイクミュート切り替え",
+  "key.modernvoicechat.mute_speaker": "スピーカーミュート切り替え",
+  "key.modernvoicechat.push_to_talk": "Push-to-Talk (押下発話)",
+  "title.modernvoicechat.config": "ボイスチャット設定",
+  "category.modernvoicechat.audio": "オーディオ設定",
+  "category.modernvoicechat.devices": "デバイス設定",
+  "option.modernvoicechat.input_mode": "入力モード",
+  "option.modernvoicechat.input_mode.VOICE_ACTIVATION": "音声検知 (VAD)",
+  "option.modernvoicechat.input_mode.PUSH_TO_TALK": "Push-to-Talk (PTT)",
+  "option.modernvoicechat.mic_test": "マイクテスト (自分の声を聴く)",
+  "option.modernvoicechat.vad_threshold": "音声検知感度 (%)",
+  "option.modernvoicechat.mic_volume": "マイク音量 (%)",
+  "option.modernvoicechat.speaker_volume": "スピーカー音量 (%)",
+  "option.modernvoicechat.mic_device": "マイク入力デバイス",
+  "option.modernvoicechat.speaker_device": "スピーカー出力デバイス",
+  "message.modernvoicechat.mic_muted": "マイクをミュートしました",
+  "message.modernvoicechat.mic_unmuted": "マイクのミュートを解除しました",
+  "message.modernvoicechat.speaker_muted": "スピーカーをミュートしました",
+  "message.modernvoicechat.speaker_unmuted": "スピーカーのミュートを解除しました"
+}

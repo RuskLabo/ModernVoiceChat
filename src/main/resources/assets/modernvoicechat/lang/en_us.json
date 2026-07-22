@@ -1,0 +1,23 @@
+{
+  "key.categories.modernvoicechat": "ModernVoiceChat",
+  "key.modernvoicechat.open_settings": "Open Voice Chat Settings",
+  "key.modernvoicechat.mute_mic": "Toggle Microphone Mute",
+  "key.modernvoicechat.mute_speaker": "Toggle Speaker Mute",
+  "key.modernvoicechat.push_to_talk": "Push-to-Talk",
+  "title.modernvoicechat.config": "Voice Chat Settings",
+  "category.modernvoicechat.audio": "Audio Settings",
+  "category.modernvoicechat.devices": "Device Settings",
+  "option.modernvoicechat.input_mode": "Input Mode",
+  "option.modernvoicechat.input_mode.VOICE_ACTIVATION": "Voice Activation (VAD)",
+  "option.modernvoicechat.input_mode.PUSH_TO_TALK": "Push-to-Talk (PTT)",
+  "option.modernvoicechat.mic_test": "Microphone Test (Loopback)",
+  "option.modernvoicechat.vad_threshold": "VAD Threshold (%)",
+  "option.modernvoicechat.mic_volume": "Microphone Volume (%)",
+  "option.modernvoicechat.speaker_volume": "Speaker Volume (%)",
+  "option.modernvoicechat.mic_device": "Microphone Device",
+  "option.modernvoicechat.speaker_device": "Speaker Device",
+  "message.modernvoicechat.mic_muted": "Microphone Muted",
+  "message.modernvoicechat.mic_unmuted": "Microphone Unmuted",
+  "message.modernvoicechat.speaker_muted": "Speaker Muted",
+  "message.modernvoicechat.speaker_unmuted": "Speaker Unmuted"
+}
