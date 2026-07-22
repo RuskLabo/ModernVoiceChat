@@ -181,9 +181,16 @@ object ClientVoiceManager {
             val framePair = recorder?.readFrame() ?: break
             val (pcm, isSpeaking) = framePair
 
-            val shouldTransmit = isHoldingRadio || when (VoiceConfig.inputMode) {
+            val isVoiceDetected = when (VoiceConfig.inputMode) {
                 VoiceConfig.InputMode.PUSH_TO_TALK -> isPttPressed
                 VoiceConfig.InputMode.VOICE_ACTIVATION -> isSpeaking
+            }
+
+            // 無線機長押し中であっても、実際に声を発話した時 (isSpeaking / PTT) のみ送信・Talking状態にする
+            val shouldTransmit = if (isHoldingRadio) {
+                isSpeaking || isPttPressed
+            } else {
+                isVoiceDetected
             }
 
             if (shouldTransmit) {
