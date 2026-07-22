@@ -118,10 +118,10 @@ object VoiceConfig {
         // チュートリアル起動ボタン
         audioCategory.addEntry(
             entryBuilder.startBooleanToggle(
-                Component.literal("🔰 初回セットアップガイドを再起動"),
+                Component.translatable("option.modernvoicechat.restart_tutorial"),
                 false
             )
-            .setTooltip(Component.literal("マイクデバイスやボリュームテストを順番に行うガイド画面を起動します"))
+            .setTooltip(Component.translatable("option.modernvoicechat.restart_tutorial.tooltip"))
             .setSaveConsumer { if (it) com.ruskserver.modernvoicechat.client.gui.FirstTimeTutorialScreen.open(builder.build()) }
             .build()
         )
