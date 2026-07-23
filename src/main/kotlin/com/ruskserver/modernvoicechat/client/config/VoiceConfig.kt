@@ -218,24 +218,29 @@ object VoiceConfig {
         val availableMics = AudioDeviceUtils.getAvailableMicrophones()
         val availableSpeakers = AudioDeviceUtils.getAvailableSpeakers()
 
+        val currentMic = if (availableMics.contains(selectedMicrophoneDevice)) selectedMicrophoneDevice else AudioDeviceUtils.DEFAULT_DEVICE
+        val currentSpk = if (availableSpeakers.contains(selectedSpeakerDevice)) selectedSpeakerDevice else AudioDeviceUtils.DEFAULT_DEVICE
+
         deviceCategory.addEntry(
-            entryBuilder.startStringDropdownMenu(
+            entryBuilder.startSelector(
                 Component.translatable("option.modernvoicechat.mic_device"),
-                selectedMicrophoneDevice
-            ) { Component.literal(it) }
-            .setSelections(availableMics)
+                availableMics.toTypedArray(),
+                currentMic
+            )
             .setDefaultValue(AudioDeviceUtils.DEFAULT_DEVICE)
+            .setNameProvider { deviceName -> Component.literal(deviceName) }
             .setSaveConsumer { newValue -> selectedMicrophoneDevice = newValue }
             .build()
         )
 
         deviceCategory.addEntry(
-            entryBuilder.startStringDropdownMenu(
+            entryBuilder.startSelector(
                 Component.translatable("option.modernvoicechat.speaker_device"),
-                selectedSpeakerDevice
-            ) { Component.literal(it) }
-            .setSelections(availableSpeakers)
+                availableSpeakers.toTypedArray(),
+                currentSpk
+            )
             .setDefaultValue(AudioDeviceUtils.DEFAULT_DEVICE)
+            .setNameProvider { deviceName -> Component.literal(deviceName) }
             .setSaveConsumer { newValue -> selectedSpeakerDevice = newValue }
             .build()
         )
