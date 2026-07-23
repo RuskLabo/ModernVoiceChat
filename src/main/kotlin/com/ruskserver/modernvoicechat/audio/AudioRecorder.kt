@@ -127,12 +127,26 @@ class AudioRecorder(
         }
     }
 
-    fun readFrame(timeoutMs: Long = 0): Pair<ShortArray, Boolean>? {
-        return if (timeoutMs > 0) {
+    /**
+     * キューからフレームを取り出す。
+     * drainToLatest=true の場合、キューに複数フレームが溜まっていても最新だけを返す。
+     * ループバックで使うと古いフレームをスキップして遅延を防げる。
+     */
+    fun readFrame(timeoutMs: Long = 0, drainToLatest: Boolean = false): Pair<ShortArray, Boolean>? {
+        val first = if (timeoutMs > 0) {
             pcmQueue.poll(timeoutMs, TimeUnit.MILLISECONDS)
         } else {
             pcmQueue.poll()
+        } ?: return null
+
+        if (!drainToLatest) return first
+
+        // キューに残っているフレームを全部読み飛ばして最新フレームのみ返す
+        var latest = first
+        while (true) {
+            latest = pcmQueue.poll() ?: break
         }
+        return latest
     }
 
     @Synchronized

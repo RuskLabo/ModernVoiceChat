@@ -104,8 +104,9 @@ object ClientVoiceManager {
             logger.info("Mic loopback thread started")
             while (loopbackRunning && !Thread.currentThread().isInterrupted) {
                 try {
-                    // 20ms タイムアウト付きで取り出す（キャプチャと同じ cadence で待機）
-                    val framePair = localRecorder.readFrame(timeoutMs = 30L)
+                    // drainToLatest=true: キューに溜まった古いフレームを全部読み飛ばし
+                    // 最新フレームだけを再生 → バッファ蓄積遅延を防ぐ
+                    val framePair = localRecorder.readFrame(timeoutMs = 30L, drainToLatest = true)
 
                     if (framePair != null) {
                         val (pcm, isSpeaking) = framePair

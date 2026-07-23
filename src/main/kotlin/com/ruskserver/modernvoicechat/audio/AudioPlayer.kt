@@ -87,6 +87,10 @@ class AudioPlayer(
     /**
      * キューを経由せずに SourceDataLine へ直接書き込む最低遅延パス。
      * ループバックマイクテスト専用。通常のネットワーク再生には playAudio() を使う。
+     *
+     * OSのバッファ蓄積による遅延とオーバーフロークリックノイズを防ぐため、
+     * 書き込み前に available() をチェックし、バッファが詰まっている場合は
+     * flush() でリセットしてから書き込む。
      */
     fun playAudioDirect(playerUuid: UUID, pcm: ShortArray) {
         if (VoiceConfig.isSpeakerMuted) return
@@ -97,7 +101,29 @@ class AudioPlayer(
             val scaledSample = (sample * volumeMultiplier).coerceIn(-32768.0, 32767.0).toInt().toShort()
             byteBuffer.putShort(scaledSample)
         }
-        writeToLine(PlaybackJob(playerUuid, byteBuffer.array(), volumeMultiplier))
+        val rawBytes = byteBuffer.array()
+        val frameSize = rawBytes.size
+
+        var line = playerLines[playerUuid]
+        if (line == null) {
+            val newLine = createLine() ?: return
+            val existing = playerLines.putIfAbsent(playerUuid, newLine)
+            line = existing ?: newLine
+        }
+
+        try {
+            // available() はバッファ内の残余容量(書き込み可能バイト数)を返す。
+            // フレーム1枚分の空きがなければ、OSバッファに古い音声が溜まっている → flush() でリセット。
+            // これにより 0.5s 遅延と溢れ時のクリックノイズを防止する。
+            if (line.available() < frameSize) {
+                line.flush()
+            }
+            line.write(rawBytes, 0, frameSize)
+        } catch (e: Exception) {
+            logger.error("Error in direct audio write for player $playerUuid: ${e.message}")
+            playerLines.remove(playerUuid)
+            try { line.close() } catch (_: Exception) {}
+        }
     }
 
     private fun createLine(): SourceDataLine? {
