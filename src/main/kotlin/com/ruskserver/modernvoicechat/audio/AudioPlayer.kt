@@ -107,8 +107,12 @@ class AudioPlayer(
                             val dz = frame.posZ - listenerZ
                             val dist = sqrt(dx * dx + dy * dy + dz * dz)
 
-                            // 距離減衰: 2m ～ 24m の間でスライディング減衰
-                            val maxDist = 24.0
+                            // 距離減衰: 2m ～ ServerConfig.VOICE_RANGE の間でスライディング減衰
+                            val maxDist = try {
+                                com.ruskserver.modernvoicechat.config.ServerConfig.VOICE_RANGE.get()
+                            } catch (_: Throwable) {
+                                24.0
+                            }
                             val minDist = 2.0
                             val distFactor = when {
                                 dist <= minDist -> 1.0f
