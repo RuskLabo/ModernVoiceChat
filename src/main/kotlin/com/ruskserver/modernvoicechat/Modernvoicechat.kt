@@ -47,15 +47,19 @@ object Modernvoicechat {
         com.ruskserver.modernvoicechat.item.ModCreativeTabs.register(MOD_BUS)
 
         MOD_BUS.addListener(this::registerPayloads)
-        MOD_BUS.addListener(this::registerKeyMappings)
-        MOD_BUS.addListener(this::registerGuiLayers)
-        MOD_BUS.addListener(this::onClientSetup)
         MOD_BUS.addListener(this::onServerSetup)
 
         NeoForge.EVENT_BUS.register(ServerVoiceManager)
-        NeoForge.EVENT_BUS.register(ClientVoiceManager)
-        NeoForge.EVENT_BUS.register(ClientEventHandler)
-        NeoForge.EVENT_BUS.register(NameTagIcons)
+
+        if (net.neoforged.fml.loading.FMLEnvironment.dist.isClient) {
+            MOD_BUS.addListener(this::registerKeyMappings)
+            MOD_BUS.addListener(this::registerGuiLayers)
+            MOD_BUS.addListener(this::onClientSetup)
+
+            NeoForge.EVENT_BUS.register(ClientVoiceManager)
+            NeoForge.EVENT_BUS.register(ClientEventHandler)
+            NeoForge.EVENT_BUS.register(NameTagIcons)
+        }
     }
 
     private fun registerPayloads(event: RegisterPayloadHandlersEvent) {

@@ -295,7 +295,7 @@ object ClientVoiceManager {
         VoiceHudOverlay.isSpeakingCurrent = anySpeaking
     }
 
-    private fun sendKeepAlivePacket(player: net.minecraft.client.player.LocalPlayer) {
+    private fun sendKeepAlivePacket(player: net.minecraft.world.entity.player.Player) {
         val keepAlivePacket = VoicePacket(
             senderUuid = player.uuid,
             sequenceNumber = System.currentTimeMillis(),
