@@ -74,6 +74,10 @@ class QuicVoiceServer(
     fun routeIncomingPacket(packet: VoicePacket, senderAddr: InetSocketAddress) {
         val senderUuid = packet.senderUuid
         registerClient(senderUuid, senderAddr)
+
+        // 空パケット（キープアライブ/ハンドシェイク）の場合はアドレス登録のみ行って早期リターン
+        if (packet.opusData.isEmpty()) return
+
         val recipients = router.getRecipientsForSender(senderUuid)
 
         if (recipients.isNotEmpty()) {

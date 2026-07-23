@@ -82,6 +82,7 @@ object ClientVoiceManager {
     }
 
     private fun handleIncomingPacket(packet: VoicePacket) {
+        if (packet.opusData.isEmpty()) return
         val pcm = decoder?.decode(packet.opusData, 960) ?: return
         player?.playAudio(packet.senderUuid, pcm, packet.posX, packet.posY, packet.posZ, packet.isRadio, packet.quality)
         NameTagIcons.setPlayerSpeaking(packet.senderUuid, true)
@@ -238,6 +239,10 @@ object ClientVoiceManager {
 
         if (VoiceConfig.isMicMuted) {
             VoiceHudOverlay.isSpeakingCurrent = false
+            // ミュート中であっても 10 ticks (0.5秒) ごとに UDP キープアライブを送信して登録を維持
+            if (mc.level != null && mc.level!!.gameTime % 10L == 0L) {
+                sendKeepAlivePacket(localPlayer)
+            }
             return
         }
 
@@ -282,7 +287,24 @@ object ClientVoiceManager {
             }
         }
 
+        // 発話がない場合も 10 ticks (0.5秒) ごとに UDP キープアライブを送信してサーバーに受信先 IP:Port を常時登録
+        if (!anySpeaking && mc.level != null && mc.level!!.gameTime % 10L == 0L) {
+            sendKeepAlivePacket(localPlayer)
+        }
+
         VoiceHudOverlay.isSpeakingCurrent = anySpeaking
+    }
+
+    private fun sendKeepAlivePacket(player: net.minecraft.client.player.LocalPlayer) {
+        val keepAlivePacket = VoicePacket(
+            senderUuid = player.uuid,
+            sequenceNumber = System.currentTimeMillis(),
+            opusData = ByteArray(0), // 空の Opus データ = キープアライブパケット
+            posX = player.x,
+            posY = player.y,
+            posZ = player.z
+        )
+        voiceClient?.sendHandler?.invoke(keepAlivePacket)
     }
 
     @SubscribeEvent
