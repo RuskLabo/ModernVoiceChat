@@ -1,5 +1,6 @@
 package com.ruskserver.modernvoicechat.client
 
+import com.ruskserver.modernvoicechat.audio.AudioDeviceUtils
 import com.ruskserver.modernvoicechat.audio.AudioPlayer
 import com.ruskserver.modernvoicechat.audio.AudioRecorder
 import com.ruskserver.modernvoicechat.audio.OpusDecoderWrapper
@@ -18,8 +19,15 @@ import net.neoforged.neoforge.client.event.ClientTickEvent
 import net.neoforged.neoforge.network.PacketDistributor
 import org.slf4j.LoggerFactory
 import java.net.InetSocketAddress
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import javax.sound.sampled.AudioFormat
+import javax.sound.sampled.AudioSystem
+import javax.sound.sampled.DataLine
+import javax.sound.sampled.SourceDataLine
+import javax.sound.sampled.TargetDataLine
 
 object ClientVoiceManager {
     private val logger = LoggerFactory.getLogger(ClientVoiceManager::class.java)
@@ -34,9 +42,11 @@ object ClientVoiceManager {
     var isConnected = false
         private set
 
-    // マイクテスト用の専用ループバックスレッド（ClientTickに依存しない20ms cadence）
+    // マイクテスト用の専用ループバックスレッド（TargetDataLine→SourceDataLine 直結コピー方式）
     @Volatile private var loopbackThread: Thread? = null
     @Volatile private var loopbackRunning = false
+    private var loopbackSourceLine: SourceDataLine? = null
+    private var loopbackTargetLine: TargetDataLine? = null
 
     fun connect(voicePort: Int, voiceHost: String = "", secretToken: UUID) {
         val mc = Minecraft.getInstance()
@@ -84,52 +94,115 @@ object ClientVoiceManager {
     // ClientTickから完全に独立し、20ms cadence でキャプチャ→再生をループする
     // ===========================================================================
 
+    /**
+     * マイクテスト用ループバック。
+     * TargetDataLine (マイク) → SourceDataLine (スピーカー) を直接バイトコピーする方式。
+     * AudioRecorder/AudioPlayer のキュー・バッファを一切通らないため最低遅延でクリック音なし。
+     * 話している間だけ有音PCMを書き込み、無音時はサイレントフレームを書き込んで
+     * SourceDataLine のアンダーランを防ぐ。
+     */
     fun startLoopback() {
         if (loopbackRunning) return
         stopLoopback()
 
-        if (recorder == null) {
-            recorder = AudioRecorder(48000, 960)
-            recorder?.start()
-        }
-        if (player == null) {
-            player = AudioPlayer(48000)
+        val format = AudioFormat(48000f, 16, 1, true, false)
+        val frameSizeBytes = 960 * 2  // 20ms @ 48kHz mono 16bit
+        val silentFrame = ByteArray(frameSizeBytes)
+
+        // TargetDataLine (マイク入力)
+        val micDeviceName = VoiceConfig.selectedMicrophoneDevice
+        val micMixerInfo = AudioDeviceUtils.getMixerInfoByName(micDeviceName)
+        val targetInfo = DataLine.Info(TargetDataLine::class.java, format)
+        val tLine = try {
+            val l = if (micMixerInfo != null) {
+                AudioSystem.getMixer(micMixerInfo).getLine(targetInfo) as TargetDataLine
+            } else {
+                AudioSystem.getLine(targetInfo) as TargetDataLine
+            }
+            // 1フレーム分のバッファで最低遅延キャプチャ
+            l.open(format, frameSizeBytes)
+            l.start()
+            l
+        } catch (e: Exception) {
+            logger.error("Loopback: failed to open mic line", e)
+            return
         }
 
+        // SourceDataLine (スピーカー出力)
+        val spkDeviceName = VoiceConfig.selectedSpeakerDevice
+        val spkMixerInfo = AudioDeviceUtils.getMixerInfoByName(spkDeviceName)
+        val sourceInfo = DataLine.Info(SourceDataLine::class.java, format)
+        val sLine = try {
+            val l = if (spkMixerInfo != null) {
+                AudioSystem.getMixer(spkMixerInfo).getLine(sourceInfo) as SourceDataLine
+            } else {
+                AudioSystem.getLine(sourceInfo) as SourceDataLine
+            }
+            // 2フレーム分のバッファ (40ms) でアンダーランを防止しつつ遅延を抑える
+            l.open(format, frameSizeBytes * 2)
+            l.start()
+            l
+        } catch (e: Exception) {
+            logger.error("Loopback: failed to open speaker line", e)
+            tLine.stop(); tLine.close()
+            return
+        }
+
+        loopbackTargetLine = tLine
+        loopbackSourceLine = sLine
         loopbackRunning = true
-        loopbackThread = Thread({
-            val localRecorder = recorder ?: return@Thread
-            val localPlayer = player ?: return@Thread
 
-            logger.info("Mic loopback thread started")
+        loopbackThread = Thread({
+            logger.info("Mic loopback thread started (direct copy mode)")
+            val buf = ByteArray(frameSizeBytes)
+
             while (loopbackRunning && !Thread.currentThread().isInterrupted) {
                 try {
-                    // drainToLatest=true: キューに溜まった古いフレームを全部読み飛ばし
-                    // 最新フレームだけを再生 → バッファ蓄積遅延を防ぐ
-                    val framePair = localRecorder.readFrame(timeoutMs = 30L, drainToLatest = true)
-
-                    if (framePair != null) {
-                        val (pcm, isSpeaking) = framePair
-
-                        val isPttPressed = KeyMappings.PUSH_TO_TALK.isDown
-                        val shouldPlay = when (VoiceConfig.inputMode) {
-                            VoiceConfig.InputMode.PUSH_TO_TALK -> isPttPressed
-                            VoiceConfig.InputMode.VOICE_ACTIVATION -> isSpeaking
-                        }
-
-                        VoiceHudOverlay.isSpeakingCurrent = shouldPlay
-
-                        if (shouldPlay) {
-                            val mc = Minecraft.getInstance()
-                            val lp = mc.player
-                            if (lp != null) {
-                                // キューを経由しない直接書き込みで最低遅延ループバックを実現
-                                localPlayer.playAudioDirect(lp.uuid, pcm)
-                            }
-                        }
-                    } else {
-                        VoiceHudOverlay.isSpeakingCurrent = false
+                    // 正確に 1 フレーム分を TargetDataLine から読み出す
+                    var readTotal = 0
+                    while (readTotal < frameSizeBytes && loopbackRunning) {
+                        val n = tLine.read(buf, readTotal, frameSizeBytes - readTotal)
+                        if (n < 0) break
+                        readTotal += n
                     }
+                    if (readTotal < frameSizeBytes) continue
+
+                    // マイクゲインを適用して PCM を Short 配列に変換
+                    val micGain = VoiceConfig.micVolumePercentage / 100.0
+                    val spkGain = VoiceConfig.speakerVolumePercentage / 100.0
+                    val combinedGain = micGain * spkGain
+                    val outBuf = if (combinedGain != 1.0) {
+                        val bb = ByteBuffer.wrap(buf.copyOf()).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                        val pcm = ShortArray(960).also { bb.get(it) }
+                        val out = ByteBuffer.allocate(frameSizeBytes).order(ByteOrder.LITTLE_ENDIAN)
+                        for (s in pcm) {
+                            val scaled = (s * combinedGain).coerceIn(-32768.0, 32767.0).toInt().toShort()
+                            out.putShort(scaled)
+                        }
+                        out.array()
+                    } else buf
+
+                    // RMS を計算して発話判定
+                    val bb = ByteBuffer.wrap(buf).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                    val pcm = ShortArray(960).also { bb.get(it) }
+                    var sumSq = 0.0
+                    for (s in pcm) sumSq += (s / 32768.0).let { it * it }
+                    val rms = Math.sqrt(sumSq / 960)
+                    val threshold = VoiceConfig.vadThresholdPercentage / 1000.0
+
+                    val isPttPressed = KeyMappings.PUSH_TO_TALK.isDown
+                    val isSpeaking = rms >= threshold
+                    val shouldPlay = when (VoiceConfig.inputMode) {
+                        VoiceConfig.InputMode.PUSH_TO_TALK -> isPttPressed
+                        VoiceConfig.InputMode.VOICE_ACTIVATION -> isSpeaking
+                    }
+
+                    VoiceHudOverlay.isSpeakingCurrent = shouldPlay
+
+                    // 話している間は有音フレーム、無音時はサイレントフレームを書き込む
+                    // サイレントフレームを書かないとアンダーランでプツプツ鳴る
+                    sLine.write(if (shouldPlay) outBuf else silentFrame, 0, frameSizeBytes)
+
                 } catch (e: InterruptedException) {
                     break
                 } catch (e: Exception) {
@@ -137,6 +210,7 @@ object ClientVoiceManager {
                     logger.error("Error in loopback thread: ${e.message}")
                 }
             }
+
             VoiceHudOverlay.isSpeakingCurrent = false
             logger.info("Mic loopback thread stopped")
         }, "ModernVoiceChat-LoopbackThread").also {
@@ -149,6 +223,10 @@ object ClientVoiceManager {
         loopbackRunning = false
         loopbackThread?.interrupt()
         loopbackThread = null
+        try { loopbackSourceLine?.stop(); loopbackSourceLine?.close() } catch (_: Exception) {}
+        try { loopbackTargetLine?.stop(); loopbackTargetLine?.close() } catch (_: Exception) {}
+        loopbackSourceLine = null
+        loopbackTargetLine = null
         VoiceHudOverlay.isSpeakingCurrent = false
     }
 
