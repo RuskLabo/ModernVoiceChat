@@ -1,6 +1,6 @@
 # 📋 ModernVoiceChat Changelog
 
-## 🚀 Version 1.1
+## 🚀 Version 1.2
 
 **Release Date**: July 23, 2026  
 **Target Environment**: Minecraft 1.21.1 / NeoForge 21.1.238+ / Java 21  
