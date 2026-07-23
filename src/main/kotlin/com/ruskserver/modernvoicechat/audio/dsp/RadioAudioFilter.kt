@@ -54,6 +54,7 @@ class RadioAudioFilter(
             }
         }
 
+        // ドロップアウト処理
         if (isCurrentlyDropping) {
             dropFramesRemaining--
             if (dropFramesRemaining <= 0) {
@@ -62,33 +63,44 @@ class RadioAudioFilter(
             return result
         }
 
+        // 入力フレームが無音に近い場合はフィルタ状態をクリアして発振ループを防止
+        var maxInAbs = 0.0
+        for (s in pcm) {
+            val a = abs(s.toDouble())
+            if (a > maxInAbs) maxInAbs = a
+        }
+        if (maxInAbs < 50.0) {
+            resetState()
+            return result
+        }
+
         // Biquad フィルタ係数計算
         val hpCoeffs = calculateHighPassCoeffs(hpCutoff, sampleRate.toDouble())
         val lpCoeffs = calculateLowPassCoeffs(lpCutoff, sampleRate.toDouble())
 
-        // 700m 以内 (Q >= 0.7): ほんのりとしたリアルな背景サー音 (0% ～ 2%) で非常に聞き取りやすい状態を保つ
-        // 700m 超 (Q < 0.7): 急激にノイズ・歪みが増大
         val noiseFactor = if (clampedQuality >= 0.7f) {
-            (1.0f - clampedQuality) * 0.08f
+            (1.0f - clampedQuality) * 0.05f
         } else {
-            0.024f + (0.7f - clampedQuality) * 1.5f
+            0.015f + (0.7f - clampedQuality) * 1.0f
         }
-        val noiseAmplitude = (noiseFactor * 2500.0f).toInt()
-        val bitCrushShift = if (clampedQuality < 0.4f) ((0.4f - clampedQuality) * 4.0f).toInt() else 0
+        val noiseAmplitude = (noiseFactor * 1500.0f).toInt()
+        val bitCrushShift = if (clampedQuality < 0.4f) ((0.4f - clampedQuality) * 3.0f).toInt() else 0
 
         for (i in pcm.indices) {
             var sample = pcm[i].toDouble()
 
-            // A. ハイパスフィルタ (300Hz/800Hz 以下をカット)
+            // A. ハイパスフィルタ
             val hpOut = hpCoeffs.b0 * sample + hpCoeffs.b1 * hpX1 + hpCoeffs.b2 * hpX2 -
                     hpCoeffs.a1 * hpY1 - hpCoeffs.a2 * hpY2
-            hpX2 = hpX1; hpX1 = sample; hpY2 = hpY1; hpY1 = hpOut
+            hpX2 = hpX1; hpX1 = sample
+            hpY2 = hpY1; hpY1 = hpOut.coerceIn(-65536.0, 65536.0)
             sample = hpOut
 
-            // B. ローパスフィルタ (3400Hz/1800Hz 以上をカット)
+            // B. ローパスフィルタ
             val lpOut = lpCoeffs.b0 * sample + lpCoeffs.b1 * lpX1 + lpCoeffs.b2 * lpX2 -
                     lpCoeffs.a1 * lpY1 - lpCoeffs.a2 * lpY2
-            lpX2 = lpX1; lpX1 = sample; lpY2 = lpY1; lpY1 = lpOut
+            lpX2 = lpX1; lpX1 = sample
+            lpY2 = lpY1; lpY1 = lpOut.coerceIn(-65536.0, 65536.0)
             sample = lpOut
 
             // C. 軽いコンプレッサー & ダイナミクス圧縮
@@ -100,7 +112,7 @@ class RadioAudioFilter(
                 sample += noise
             }
 
-            // E. デジタル歪み (ビットクラッシュ / MELPe風カサつき)
+            // E. デジタル歪み
             var intSample = sample.toInt().coerceIn(-32768, 32767)
             if (bitCrushShift > 0) {
                 intSample = (intSample shr bitCrushShift) shl bitCrushShift
@@ -113,15 +125,20 @@ class RadioAudioFilter(
         return result
     }
 
+    fun resetState() {
+        hpX1 = 0.0; hpX2 = 0.0; hpY1 = 0.0; hpY2 = 0.0
+        lpX1 = 0.0; lpX2 = 0.0; lpY1 = 0.0; lpY2 = 0.0
+    }
+
     private fun compressSample(sample: Double): Double {
         val absVal = abs(sample)
-        val threshold = 8000.0
-        val ratio = 0.5
+        val threshold = 12000.0
+        val ratio = 0.6
 
         val compressedAbs = if (absVal > threshold) {
             threshold + (absVal - threshold) * ratio
         } else {
-            absVal * 1.3 // 小さい音を持ち上げる (AGC)
+            absVal // 小音量の不要な連続ブーストを削除して発振・ノイズ持ち上げを防止
         }
 
         return if (sample >= 0) compressedAbs else -compressedAbs

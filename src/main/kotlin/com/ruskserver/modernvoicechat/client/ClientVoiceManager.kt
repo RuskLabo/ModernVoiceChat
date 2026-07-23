@@ -91,6 +91,11 @@ object ClientVoiceManager {
 
     private fun handleIncomingPacket(packet: VoicePacket) {
         if (packet.opusData.isEmpty()) return
+        val mc = Minecraft.getInstance()
+        val localPlayer = mc.player
+        // 自分自身のパケットが届いた場合は再生せず無視（セルフエコー・ループ防止）
+        if (localPlayer != null && packet.senderUuid == localPlayer.uuid) return
+
         logger.info("[AUDIO-RX] Received voice from ${packet.senderUuid}, opusLen=${packet.opusData.size}")
         val pcm = decoder?.decode(packet.opusData, 960)
         if (pcm == null) {
@@ -273,9 +278,14 @@ object ClientVoiceManager {
                 VoiceConfig.InputMode.VOICE_ACTIVATION -> isSpeaking
             }
 
-            // 無線機長押し中であっても、実際に声を発話した時 (isSpeaking / PTT) のみ送信・Talking状態にする
+            // 無線機使用時 (isHoldingRadio) は右クリック長押し自体を送信意思とするが、
+            // PUSH_TO_TALK モード時は isSpeaking による自動検知を行わず (相手の声をマイクが拾ってループするのを防ぐ)、
+            // 無線構え中 OR PTTキー押下中に入力モードの設定に従って送信する
             val shouldTransmit = if (isHoldingRadio) {
-                isSpeaking || isPttPressed
+                when (VoiceConfig.inputMode) {
+                    VoiceConfig.InputMode.PUSH_TO_TALK -> true // 右クリック長押し中＝無線PTT送信中
+                    VoiceConfig.InputMode.VOICE_ACTIVATION -> isSpeaking
+                }
             } else {
                 isVoiceDetected
             }

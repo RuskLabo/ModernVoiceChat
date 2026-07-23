@@ -30,7 +30,7 @@ class AudioPlayer(
         Thread(r, "ModernVoiceChat-AudioPlaybackThread").also { it.isDaemon = true }
     }
 
-    private val radioFilter = com.ruskserver.modernvoicechat.audio.dsp.RadioAudioFilter(sampleRate)
+    private val playerRadioFilters = ConcurrentHashMap<UUID, com.ruskserver.modernvoicechat.audio.dsp.RadioAudioFilter>()
 
     init {
         initMasterLine()
@@ -101,8 +101,13 @@ class AudioPlayer(
         if (VoiceConfig.isSpeakerMuted) return
 
         val processedPcm = if (isRadio) {
-            radioFilter.process(pcm, quality)
+            val filter = playerRadioFilters.computeIfAbsent(playerUuid) {
+                com.ruskserver.modernvoicechat.audio.dsp.RadioAudioFilter(sampleRate)
+            }
+            filter.process(pcm, quality)
         } else {
+            // 無線以外への切り替え時はフィルタ状態をクリア
+            playerRadioFilters[playerUuid]?.resetState()
             pcm
         }
 
@@ -158,11 +163,13 @@ class AudioPlayer(
 
     fun stopPlayer(playerUuid: UUID) {
         activeBuffers.remove(playerUuid)
+        playerRadioFilters.remove(playerUuid)
     }
 
     fun stopAll() {
         playbackExecutor.shutdownNow()
         activeBuffers.clear()
+        playerRadioFilters.clear()
         try {
             masterLine?.stop()
             masterLine?.close()
