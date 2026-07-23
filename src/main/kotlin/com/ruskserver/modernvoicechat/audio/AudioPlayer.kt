@@ -53,10 +53,13 @@ class AudioPlayer(
             pcm
         }
 
-        val volumeMultiplier = VoiceConfig.speakerVolumePercentage / 100.0
+        val globalVolume = VoiceConfig.speakerVolumePercentage / 100.0
+        val playerVolume = VoiceConfig.getPlayerVolume(playerUuid) / 100.0
+        val combinedMultiplier = globalVolume * playerVolume
+
         val byteBuffer = ByteBuffer.allocate(processedPcm.size * 2).order(ByteOrder.LITTLE_ENDIAN)
         for (sample in processedPcm) {
-            val scaledSample = (sample * volumeMultiplier).coerceIn(-32768.0, 32767.0).toInt().toShort()
+            val scaledSample = (sample * combinedMultiplier).coerceIn(-32768.0, 32767.0).toInt().toShort()
             byteBuffer.putShort(scaledSample)
         }
 
@@ -64,7 +67,7 @@ class AudioPlayer(
         if (playbackQueue.remainingCapacity() == 0) {
             playbackQueue.poll()
         }
-        playbackQueue.offer(PlaybackJob(playerUuid, byteBuffer.array(), volumeMultiplier))
+        playbackQueue.offer(PlaybackJob(playerUuid, byteBuffer.array(), combinedMultiplier))
     }
 
     private fun writeToLine(job: PlaybackJob) {

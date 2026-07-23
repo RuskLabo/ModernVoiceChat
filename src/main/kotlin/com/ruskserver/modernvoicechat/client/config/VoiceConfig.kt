@@ -36,7 +36,8 @@ object VoiceConfig {
         var speakerVolumePercentage: Int = 100,
         var selectedMicrophoneDevice: String = AudioDeviceUtils.DEFAULT_DEVICE,
         var selectedSpeakerDevice: String = AudioDeviceUtils.DEFAULT_DEVICE,
-        var isTutorialCompleted: Boolean = false
+        var isTutorialCompleted: Boolean = false,
+        var playerVolumes: MutableMap<String, Int> = mutableMapOf()
     )
 
     private var data = ConfigData()
@@ -68,6 +69,14 @@ object VoiceConfig {
     var isTutorialCompleted: Boolean
         get() = data.isTutorialCompleted
         set(value) { data.isTutorialCompleted = value }
+
+    fun getPlayerVolume(playerUuid: java.util.UUID): Int {
+        return data.playerVolumes[playerUuid.toString()] ?: 100
+    }
+
+    fun setPlayerVolume(playerUuid: java.util.UUID, volume: Int) {
+        data.playerVolumes[playerUuid.toString()] = volume
+    }
 
     // ランタイム状態
     var isMicMuted: Boolean = false
@@ -112,6 +121,7 @@ object VoiceConfig {
         val entryBuilder: ConfigEntryBuilder = builder.entryBuilder()
         val audioCategory: ConfigCategory = builder.getOrCreateCategory(Component.translatable("category.modernvoicechat.audio"))
         val deviceCategory: ConfigCategory = builder.getOrCreateCategory(Component.translatable("category.modernvoicechat.devices"))
+        val playersCategory: ConfigCategory = builder.getOrCreateCategory(Component.translatable("category.modernvoicechat.players"))
 
         // --- オーディオ設定カテゴリー ---
 
@@ -229,6 +239,59 @@ object VoiceConfig {
             .setSaveConsumer { newValue -> selectedSpeakerDevice = newValue }
             .build()
         )
+
+        // --- プレイヤー別音量設定カテゴリー ---
+
+        val mc = Minecraft.getInstance()
+        val localPlayerUuid = mc.player?.uuid
+        val onlinePlayers = mc.connection?.onlinePlayers?.filter { it.profile.id != localPlayerUuid } ?: emptyList()
+
+        if (onlinePlayers.isNotEmpty()) {
+            for (playerInfo in onlinePlayers) {
+                val uuid = playerInfo.profile.id
+                val name = playerInfo.profile.name
+                val currentVol = getPlayerVolume(uuid)
+
+                playersCategory.addEntry(
+                    entryBuilder.startIntSlider(
+                        Component.translatable("option.modernvoicechat.player_volume", name),
+                        currentVol,
+                        0,
+                        200
+                    )
+                    .setDefaultValue(100)
+                    .setSaveConsumer { newVol -> setPlayerVolume(uuid, newVol) }
+                    .build()
+                )
+            }
+        } else {
+            // 保存済みの他プレイヤー音量設定があればそれを表示、なければ「オンラインプレイヤーなし」ラベルを表示
+            val savedVolumes = data.playerVolumes
+            if (savedVolumes.isNotEmpty()) {
+                for ((uuidStr, vol) in savedVolumes) {
+                    try {
+                        val uuid = java.util.UUID.fromString(uuidStr)
+                        playersCategory.addEntry(
+                            entryBuilder.startIntSlider(
+                                Component.literal("Player [$uuidStr]"),
+                                vol,
+                                0,
+                                200
+                            )
+                            .setDefaultValue(100)
+                            .setSaveConsumer { newVol -> setPlayerVolume(uuid, newVol) }
+                            .build()
+                        )
+                    } catch (_: Exception) {}
+                }
+            } else {
+                playersCategory.addEntry(
+                    entryBuilder.startTextDescription(
+                        Component.translatable("option.modernvoicechat.no_players")
+                    ).build()
+                )
+            }
+        }
 
         return builder.build()
     }
