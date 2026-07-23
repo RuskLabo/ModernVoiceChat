@@ -93,6 +93,15 @@ class AudioRecorder(
                 val pcm = ShortArray(frameSizeSamples)
                 ByteBuffer.wrap(byteBuffer).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(pcm)
 
+                // VoiceConfig.micVolumePercentage を PCM サンプルに適用
+                val micGain = VoiceConfig.micVolumePercentage / 100.0
+                if (micGain != 1.0) {
+                    for (i in pcm.indices) {
+                        val scaled = (pcm[i] * micGain).coerceIn(Short.MIN_VALUE.toDouble(), Short.MAX_VALUE.toDouble())
+                        pcm[i] = scaled.toInt().toShort()
+                    }
+                }
+
                 var sumSquares = 0.0
                 for (sample in pcm) {
                     val normalized = sample / 32768.0
