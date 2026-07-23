@@ -58,7 +58,15 @@ object ClientVoiceManager {
             serverData != null && serverData.ip.isNotBlank() -> serverData.ip.split(":")[0]
             else -> "127.0.0.1"
         }
-        val serverAddress = InetSocketAddress(targetHost, voicePort)
+        // DNS を即時解決して InetAddress に変換（遅延解決による送信失敗を防止）
+        val resolvedAddress = try {
+            java.net.InetAddress.getByName(targetHost)
+        } catch (e: Exception) {
+            logger.error("Failed to resolve voice server host '$targetHost': ${e.message}")
+            java.net.InetAddress.getByName("127.0.0.1")
+        }
+        val serverAddress = InetSocketAddress(resolvedAddress, voicePort)
+        logger.info("Voice server address resolved: $targetHost -> ${resolvedAddress.hostAddress}:$voicePort")
 
         encoder = OpusEncoderWrapper(48000, 1, 32000)
         decoder = OpusDecoderWrapper(48000, 1)
@@ -75,7 +83,7 @@ object ClientVoiceManager {
         recorder?.start()
         voiceClient?.start()
         isConnected = true
-        logger.info("ClientVoiceManager connected to voice server (port: ${serverAddress.port})")
+        logger.info("ClientVoiceManager connected to voice server (resolved: ${resolvedAddress.hostAddress}:${serverAddress.port})")
 
         PacketDistributor.sendToServer(ModNetwork.C2SVoiceSecretPayload(secretToken))
         voiceClient?.sendHandshake(localPlayer.x, localPlayer.y, localPlayer.z)
@@ -83,7 +91,12 @@ object ClientVoiceManager {
 
     private fun handleIncomingPacket(packet: VoicePacket) {
         if (packet.opusData.isEmpty()) return
-        val pcm = decoder?.decode(packet.opusData, 960) ?: return
+        logger.info("[AUDIO-RX] Received voice from ${packet.senderUuid}, opusLen=${packet.opusData.size}")
+        val pcm = decoder?.decode(packet.opusData, 960)
+        if (pcm == null) {
+            logger.warn("[AUDIO-RX] Decoder returned null for packet from ${packet.senderUuid}")
+            return
+        }
         player?.playAudio(packet.senderUuid, pcm, packet.posX, packet.posY, packet.posZ, packet.isRadio, packet.quality)
         NameTagIcons.setPlayerSpeaking(packet.senderUuid, true)
     }

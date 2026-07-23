@@ -49,10 +49,17 @@ class QuicVoiceClient(
                     try {
                         udpSocket.receive(packet)
                         val data = packet.data.copyOfRange(0, packet.length)
-                        val voicePacket = VoicePacket.fromBytes(data)
+                        val voicePacket = try {
+                            VoicePacket.fromBytes(data)
+                        } catch (e: Exception) {
+                            logger.warn("[UDP-CLIENT-RX] Failed to parse packet: ${e.message}")
+                            continue
+                        }
+                        logger.debug("[UDP-CLIENT-RX] Received ${data.size} bytes from ${packet.address}:${packet.port} sender=${voicePacket.senderUuid} opusLen=${voicePacket.opusData.size}")
                         packetListener?.invoke(voicePacket)
                     } catch (e: Exception) {
                         if (!running) break
+                        logger.warn("[UDP-CLIENT-RX] Error: ${e.message}")
                     }
                 }
             }, "ModernVoiceChat-QuicClientReceiveThread").apply {
@@ -73,8 +80,16 @@ class QuicVoiceClient(
     }
 
     fun sendHandshake(x: Double, y: Double, z: Double) {
-        val dummyOpus = byteArrayOf(0, 1, 2, 3)
-        sendAudioFrame(dummyOpus, x, y, z)
+        // 空のOpusデータ = キープアライブ/ハンドシェイクパケット（サーバーに送信元IP:Portを登録させるため）
+        val packet = VoicePacket(
+            senderUuid = playerUuid,
+            sequenceNumber = sequenceCounter.incrementAndGet(),
+            posX = x,
+            posY = y,
+            posZ = z,
+            opusData = ByteArray(0)
+        )
+        sendAudioPacket(packet)
     }
 
     fun sendAudioFrame(opusData: ByteArray, x: Double, y: Double, z: Double) {

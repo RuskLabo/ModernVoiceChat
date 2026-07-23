@@ -52,11 +52,18 @@ class QuicVoiceServer(
                         udpSocket.receive(datagram)
                         val senderAddr = InetSocketAddress(datagram.address, datagram.port)
                         val rawData = datagram.data.copyOfRange(0, datagram.length)
-                        val packet = VoicePacket.fromBytes(rawData)
+                        logger.debug("[UDP-RX] Received ${rawData.size} bytes from $senderAddr")
+                        val packet = try {
+                            VoicePacket.fromBytes(rawData)
+                        } catch (e: Exception) {
+                            logger.warn("[UDP-RX] Failed to parse VoicePacket from $senderAddr: ${e.message}")
+                            continue
+                        }
 
                         routeIncomingPacket(packet, senderAddr)
                     } catch (e: Exception) {
                         if (!running) break
+                        logger.warn("[UDP-RX] Error in receive loop: ${e.message}")
                     }
                 }
             }, "ModernVoiceChat-QuicServerThread").apply {
@@ -76,21 +83,28 @@ class QuicVoiceServer(
         registerClient(senderUuid, senderAddr)
 
         // 空パケット（キープアライブ/ハンドシェイク）の場合はアドレス登録のみ行って早期リターン
-        if (packet.opusData.isEmpty()) return
+        if (packet.opusData.isEmpty()) {
+            logger.debug("[ROUTE] KeepAlive from $senderUuid @ $senderAddr — registered (total: ${clientAddresses.size})")
+            return
+        }
 
         val recipients = router.getRecipientsForSender(senderUuid)
+        logger.info("[ROUTE] Voice packet from $senderUuid (${packet.opusData.size}bytes) — recipients: $recipients — knownClients: ${clientAddresses.keys}")
 
-        if (recipients.isNotEmpty()) {
-            packetRouterHandler?.invoke(packet, senderAddr)
-        }
+        packetRouterHandler?.invoke(packet, senderAddr)
 
         val rawBytes = packet.toBytes()
 
         for (recipientUuid in recipients) {
-            val targetAddr = clientAddresses[recipientUuid] ?: continue
+            val targetAddr = clientAddresses[recipientUuid]
+            if (targetAddr == null) {
+                logger.warn("[ROUTE] No address for recipient $recipientUuid — skipping (known: ${clientAddresses.keys})")
+                continue
+            }
             try {
                 val outPacket = java.net.DatagramPacket(rawBytes, rawBytes.size, targetAddr.address, targetAddr.port)
                 socket?.send(outPacket)
+                logger.debug("[ROUTE] Forwarded to $recipientUuid @ $targetAddr")
             } catch (e: Exception) {
                 logger.error("Error forwarding voice packet to $recipientUuid: ${e.message}")
             }

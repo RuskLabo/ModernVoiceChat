@@ -1,6 +1,7 @@
 package com.ruskserver.modernvoicechat.audio
 
 import de.maxhenkel.opus4j.OpusEncoder
+import org.slf4j.LoggerFactory
 
 /**
  * Opusエンコーダのラッパークラス (Opus4J使用)。
@@ -10,6 +11,7 @@ class OpusEncoderWrapper(
     val channels: Int = 1,
     initialBitrateBps: Int = 32000
 ) {
+    private val logger = LoggerFactory.getLogger(OpusEncoderWrapper::class.java)
     private var encoder: OpusEncoder? = null
 
     var currentBitrate: Int = initialBitrateBps
@@ -18,7 +20,10 @@ class OpusEncoderWrapper(
     init {
         try {
             encoder = OpusEncoder(sampleRate, channels, OpusEncoder.Application.VOIP)
-        } catch (e: Throwable) {}
+            logger.info("OpusEncoder initialized successfully")
+        } catch (e: Throwable) {
+            logger.error("Failed to initialize OpusEncoder (native library may be missing): ${e.message}", e)
+        }
     }
 
     fun setBitrate(bitrateBps: Int) {

@@ -1,6 +1,7 @@
 package com.ruskserver.modernvoicechat.audio
 
 import de.maxhenkel.opus4j.OpusDecoder
+import org.slf4j.LoggerFactory
 
 /**
  * Opusデコーダのラッパークラス (Opus4J使用)。
@@ -9,12 +10,16 @@ class OpusDecoderWrapper(
     val sampleRate: Int = 48000,
     val channels: Int = 1
 ) {
+    private val logger = LoggerFactory.getLogger(OpusDecoderWrapper::class.java)
     private var decoder: OpusDecoder? = null
 
     init {
         try {
             decoder = OpusDecoder(sampleRate, channels)
-        } catch (e: Throwable) {}
+            logger.info("OpusDecoder initialized successfully")
+        } catch (e: Throwable) {
+            logger.error("Failed to initialize OpusDecoder (native library may be missing): ${e.message}", e)
+        }
     }
 
     /**
