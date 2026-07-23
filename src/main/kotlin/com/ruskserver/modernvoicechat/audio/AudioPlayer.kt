@@ -76,15 +76,28 @@ class AudioPlayer(
         }
 
         try {
-            // flush() は使わない。write() はブロッキングで正確にデータ量だけ書き込む。
-            // バッファサイズを十分大きく (200ms) 取っているためオーバーフローしない。
             line.write(job.rawBytes, 0, job.rawBytes.size)
         } catch (e: Exception) {
             logger.error("Error writing audio line for player ${job.uuid}: ${e.message}")
-            // ラインが壊れた場合はクローズして次回再作成させる
             playerLines.remove(job.uuid)
             try { line.close() } catch (_: Exception) {}
         }
+    }
+
+    /**
+     * キューを経由せずに SourceDataLine へ直接書き込む最低遅延パス。
+     * ループバックマイクテスト専用。通常のネットワーク再生には playAudio() を使う。
+     */
+    fun playAudioDirect(playerUuid: UUID, pcm: ShortArray) {
+        if (VoiceConfig.isSpeakerMuted) return
+
+        val volumeMultiplier = VoiceConfig.speakerVolumePercentage / 100.0
+        val byteBuffer = ByteBuffer.allocate(pcm.size * 2).order(ByteOrder.LITTLE_ENDIAN)
+        for (sample in pcm) {
+            val scaledSample = (sample * volumeMultiplier).coerceIn(-32768.0, 32767.0).toInt().toShort()
+            byteBuffer.putShort(scaledSample)
+        }
+        writeToLine(PlaybackJob(playerUuid, byteBuffer.array(), volumeMultiplier))
     }
 
     private fun createLine(): SourceDataLine? {
@@ -102,9 +115,9 @@ class AudioPlayer(
                 AudioSystem.getLine(info) as SourceDataLine
             }
 
-            // バッファを 60ms 分に設定（低遅延を保ちつつアンダーラン防止）
-            // 60ms = 3フレーム (960 samples * 2 bytes * 3 frames = 5760 bytes)
-            val bufferSize = 960 * 2 * 3  // 5760 bytes = 60ms @ 48kHz mono 16bit
+            // バッファを 20ms (1フレーム) に削減して入力遅延を最小化
+            // アンダーランが発生する場合は 2 (40ms) に戻す
+            val bufferSize = 960 * 2 * 1  // 1920 bytes = 20ms @ 48kHz mono 16bit
             line.open(format, bufferSize)
             line.start()
             logger.info("AudioPlayer: created playback line (buffer: ${bufferSize}B, device: $deviceName)")

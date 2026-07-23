@@ -119,11 +119,11 @@ object ClientVoiceManager {
                         VoiceHudOverlay.isSpeakingCurrent = shouldPlay
 
                         if (shouldPlay) {
-                            // ローカルプレイヤーのUUIDで自分自身のスピーカーへ再生
                             val mc = Minecraft.getInstance()
                             val lp = mc.player
                             if (lp != null) {
-                                localPlayer.playAudio(lp.uuid, pcm, lp.x, lp.y, lp.z)
+                                // キューを経由しない直接書き込みで最低遅延ループバックを実現
+                                localPlayer.playAudioDirect(lp.uuid, pcm)
                             }
                         }
                     } else {
