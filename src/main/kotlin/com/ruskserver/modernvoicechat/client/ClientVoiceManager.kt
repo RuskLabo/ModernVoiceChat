@@ -49,14 +49,14 @@ object ClientVoiceManager {
     fun connect(voicePort: Int, voiceHost: String = "", secretToken: UUID) {
         val mc = Minecraft.getInstance()
         val localPlayer = mc.player ?: return
-        val serverData = mc.currentServer ?: return
+        val serverData = mc.currentServer
 
         disconnect()
 
-        val targetHost = if (voiceHost.isNotBlank()) {
-            voiceHost.trim()
-        } else {
-            serverData.ip.split(":")[0]
+        val targetHost = when {
+            voiceHost.isNotBlank() -> voiceHost.trim()
+            serverData != null && serverData.ip.isNotBlank() -> serverData.ip.split(":")[0]
+            else -> "127.0.0.1"
         }
         val serverAddress = InetSocketAddress(targetHost, voicePort)
 
