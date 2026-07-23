@@ -21,7 +21,8 @@ class QuicVoiceClient(
     @Volatile private var packetListener: ((VoicePacket) -> Unit)? = null
     @Volatile var sendHandler: ((VoicePacket) -> Unit)? = null
     @Volatile private var running = false
-    private var connection: QuicClientConnection? = null
+    private var socket: java.net.DatagramSocket? = null
+    private var receiveThread: Thread? = null
 
     private val sequenceCounter = AtomicLong(0)
 
@@ -36,17 +37,37 @@ class QuicVoiceClient(
     fun start() {
         if (running) return
         try {
-            val conn = QuicClientConnection.newBuilder()
-                .uri(java.net.URI.create("https://${serverAddress.hostString}:${serverAddress.port}"))
-                .applicationProtocol("modernvoicechat")
-                .noServerCertificateCheck()
-                .build()
-            conn.connect()
-            connection = conn
+            val udpSocket = java.net.DatagramSocket()
+            socket = udpSocket
             running = true
-            logger.info("kwik Pure Java QUIC Client connected to voice server (port: ${serverAddress.port}) for player $playerUuid")
+
+            // 受信用スレッド
+            receiveThread = Thread({
+                val buffer = ByteArray(4096)
+                val packet = java.net.DatagramPacket(buffer, buffer.size)
+                while (running && !udpSocket.isClosed) {
+                    try {
+                        udpSocket.receive(packet)
+                        val data = packet.data.copyOfRange(0, packet.length)
+                        val voicePacket = VoicePacket.fromBytes(data)
+                        packetListener?.invoke(voicePacket)
+                    } catch (e: Exception) {
+                        if (!running) break
+                    }
+                }
+            }, "ModernVoiceChat-QuicClientReceiveThread").apply {
+                isDaemon = true
+                start()
+            }
+
+            // 送信用ハンドラーの設定
+            sendHandler = { voicePacket ->
+                sendAudioPacket(voicePacket)
+            }
+
+            logger.info("Voice UDP Client connected to server ${serverAddress.hostString}:${serverAddress.port} for player $playerUuid")
         } catch (e: Exception) {
-            logger.error("Failed to start kwik QUIC Client", e)
+            logger.error("Failed to start Voice UDP Client", e)
             stop()
         }
     }
@@ -57,29 +78,39 @@ class QuicVoiceClient(
     }
 
     fun sendAudioFrame(opusData: ByteArray, x: Double, y: Double, z: Double) {
+        val packet = VoicePacket(
+            senderUuid = playerUuid,
+            sequenceNumber = sequenceCounter.incrementAndGet(),
+            posX = x,
+            posY = y,
+            posZ = z,
+            opusData = opusData
+        )
+        sendAudioPacket(packet)
+    }
+
+    private fun sendAudioPacket(packet: VoicePacket) {
+        if (!running) return
+        val udpSocket = socket ?: return
         try {
-            val packet = VoicePacket(
-                senderUuid = playerUuid,
-                sequenceNumber = sequenceCounter.incrementAndGet(),
-                posX = x,
-                posY = y,
-                posZ = z,
-                opusData = opusData
-            )
             val rawBytes = packet.toBytes()
-            sendHandler?.invoke(packet)
+            val datagram = java.net.DatagramPacket(rawBytes, rawBytes.size, serverAddress.address ?: java.net.InetAddress.getByName(serverAddress.hostString), serverAddress.port)
+            udpSocket.send(datagram)
             adaptor?.onPacketSent(rawBytes.size)
         } catch (e: Exception) {
-            logger.error("Error sending QUIC audio frame: ${e.message}")
+            logger.error("Error sending voice packet: ${e.message}")
         }
     }
 
     fun stop() {
         running = false
+        sendHandler = null
         try {
-            connection?.close()
+            socket?.close()
         } catch (_: Exception) {}
-        connection = null
-        logger.info("kwik QUIC Client stopped")
+        socket = null
+        receiveThread?.interrupt()
+        receiveThread = null
+        logger.info("Voice UDP Client stopped")
     }
 }

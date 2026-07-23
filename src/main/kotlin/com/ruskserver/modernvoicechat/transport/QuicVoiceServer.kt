@@ -22,7 +22,8 @@ class QuicVoiceServer(
     private val logger = LoggerFactory.getLogger(QuicVoiceServer::class.java)
 
     @Volatile private var running = false
-    private var connector: ServerConnector? = null
+    private var socket: java.net.DatagramSocket? = null
+    private var serverThread: Thread? = null
 
     private val clientAddresses = ConcurrentHashMap<UUID, InetSocketAddress>()
     @Volatile var packetRouterHandler: ((VoicePacket, InetSocketAddress) -> Unit)? = null
@@ -38,29 +39,34 @@ class QuicVoiceServer(
     fun start() {
         if (running) return
         try {
-            val certPair = SelfSignedCertUtils.generateSelfSignedCert()
-            val config = ServerConnectionConfig.builder().build()
+            val udpSocket = java.net.DatagramSocket(port)
+            socket = udpSocket
+            running = true
 
-            val conn = ServerConnector.builder()
-                .withPort(port)
-                .withConfiguration(config)
-                .withLogger(SysOutLogger())
-                .withCertificate(
-                    java.io.FileInputStream(certPair.certFile),
-                    java.io.FileInputStream(certPair.keyFile)
-                )
-                .build()
+            serverThread = Thread({
+                val buffer = ByteArray(4096)
+                val datagram = java.net.DatagramPacket(buffer, buffer.size)
 
-            conn.registerApplicationProtocol("modernvoicechat") { _, _ ->
-                object : tech.kwik.core.server.ApplicationProtocolConnection {}
+                while (running && !udpSocket.isClosed) {
+                    try {
+                        udpSocket.receive(datagram)
+                        val senderAddr = InetSocketAddress(datagram.address, datagram.port)
+                        val rawData = datagram.data.copyOfRange(0, datagram.length)
+                        val packet = VoicePacket.fromBytes(rawData)
+
+                        routeIncomingPacket(packet, senderAddr)
+                    } catch (e: Exception) {
+                        if (!running) break
+                    }
+                }
+            }, "ModernVoiceChat-QuicServerThread").apply {
+                isDaemon = true
+                start()
             }
 
-            conn.start()
-            connector = conn
-            running = true
-            logger.info("kwik Pure Java QUIC Server started on port $port")
+            logger.info("Voice UDP Server started on UDP port $port")
         } catch (e: Exception) {
-            logger.error("Failed to start kwik QUIC Server", e)
+            logger.error("Failed to start Voice UDP Server", e)
             stop()
         }
     }
@@ -69,8 +75,21 @@ class QuicVoiceServer(
         val senderUuid = packet.senderUuid
         registerClient(senderUuid, senderAddr)
         val recipients = router.getRecipientsForSender(senderUuid)
+
         if (recipients.isNotEmpty()) {
             packetRouterHandler?.invoke(packet, senderAddr)
+        }
+
+        val rawBytes = packet.toBytes()
+
+        for (recipientUuid in recipients) {
+            val targetAddr = clientAddresses[recipientUuid] ?: continue
+            try {
+                val outPacket = java.net.DatagramPacket(rawBytes, rawBytes.size, targetAddr.address, targetAddr.port)
+                socket?.send(outPacket)
+            } catch (e: Exception) {
+                logger.error("Error forwarding voice packet to $recipientUuid: ${e.message}")
+            }
         }
     }
 
@@ -78,11 +97,13 @@ class QuicVoiceServer(
         running = false
         clientAddresses.clear()
         try {
-            connector?.close()
+            socket?.close()
         } catch (e: Exception) {
-            logger.warn("Error while stopping kwik server: ${e.message}")
+            logger.warn("Error while stopping UDP server: ${e.message}")
         }
-        connector = null
-        logger.info("kwik QUIC Server stopped")
+        socket = null
+        serverThread?.interrupt()
+        serverThread = null
+        logger.info("Voice UDP Server stopped")
     }
 }
