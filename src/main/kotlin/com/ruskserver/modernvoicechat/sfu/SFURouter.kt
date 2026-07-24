@@ -27,6 +27,8 @@ class SFURouter(
         playerPositions[playerUuid] = position
     }
 
+    fun getPosition(playerUuid: UUID): PlayerPosition? = playerPositions[playerUuid]
+
     fun removePlayer(playerUuid: UUID) {
         playerPositions.remove(playerUuid)
         directLinks.remove(playerUuid)

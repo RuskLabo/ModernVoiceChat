@@ -14,7 +14,8 @@ import java.util.concurrent.atomic.AtomicLong
 class QuicVoiceClient(
     val playerUuid: UUID,
     val serverAddress: InetSocketAddress,
-    val adaptor: DynamicBitrateAdaptor? = null
+    val adaptor: DynamicBitrateAdaptor? = null,
+    private val sessionToken: UUID = VoicePacket.NO_SESSION_TOKEN
 ) {
     private val logger = LoggerFactory.getLogger(QuicVoiceClient::class.java)
 
@@ -87,7 +88,8 @@ class QuicVoiceClient(
             posX = x,
             posY = y,
             posZ = z,
-            opusData = ByteArray(0)
+            opusData = ByteArray(0),
+            sessionToken = sessionToken
         )
         sendAudioPacket(packet)
     }
@@ -99,7 +101,8 @@ class QuicVoiceClient(
             posX = x,
             posY = y,
             posZ = z,
-            opusData = opusData
+            opusData = opusData,
+            sessionToken = sessionToken
         )
         sendAudioPacket(packet)
     }
@@ -108,7 +111,12 @@ class QuicVoiceClient(
         if (!running) return
         val udpSocket = socket ?: return
         try {
-            val rawBytes = packet.toBytes()
+            val authenticatedPacket = if (packet.sessionToken == VoicePacket.NO_SESSION_TOKEN) {
+                packet.copy(senderUuid = playerUuid, sessionToken = sessionToken)
+            } else {
+                packet
+            }
+            val rawBytes = authenticatedPacket.toBytes()
             val datagram = java.net.DatagramPacket(rawBytes, rawBytes.size, serverAddress.address ?: java.net.InetAddress.getByName(serverAddress.hostString), serverAddress.port)
             udpSocket.send(datagram)
             adaptor?.onPacketSent(rawBytes.size)

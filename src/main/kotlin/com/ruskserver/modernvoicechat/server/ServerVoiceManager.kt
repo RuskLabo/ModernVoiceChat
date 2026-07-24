@@ -47,6 +47,9 @@ object ServerVoiceManager {
         router.maxDistance = ServerConfig.VOICE_RANGE.get()
 
         voiceServer = QuicVoiceServer(port, router)
+        voiceServer?.packetAuthenticator = { playerUuid, token ->
+            playerTokens[playerUuid] == token && activePlayers.containsKey(playerUuid)
+        }
         voiceServer?.start()
         logger.info("==========================================================")
         logger.info("[ModernVoiceChat] SFU Voice Server started on UDP port $port (Range: ${router.maxDistance}m)")
@@ -81,8 +84,12 @@ object ServerVoiceManager {
         logger.info("[ModernVoiceChat] Initialized Voice Chat handshake token for player: ${player.scoreboardName} ($playerUuid)")
     }
 
-    fun onClientVoiceConfirmed(playerUuid: UUID) {
-        logger.info("[ModernVoiceChat] Voice Chat connection CONFIRMED & ESTABLISHED for player: $playerUuid")
+    fun onClientVoiceConfirmed(playerUuid: UUID, token: UUID) {
+        if (playerTokens[playerUuid] == token) {
+            logger.info("[ModernVoiceChat] Voice Chat connection CONFIRMED & ESTABLISHED for player: $playerUuid")
+        } else {
+            logger.warn("[ModernVoiceChat] Rejected invalid Voice Chat confirmation for player: $playerUuid")
+        }
     }
 
     @SubscribeEvent

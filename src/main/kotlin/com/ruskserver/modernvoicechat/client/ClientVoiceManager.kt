@@ -72,7 +72,7 @@ object ClientVoiceManager {
         decoder = OpusDecoderWrapper(48000, 1)
         adaptor = DynamicBitrateAdaptor(encoder!!)
 
-        voiceClient = QuicVoiceClient(localPlayer.uuid, serverAddress, adaptor)
+        voiceClient = QuicVoiceClient(localPlayer.uuid, serverAddress, adaptor, secretToken)
         recorder = AudioRecorder(48000, 960)
         player = AudioPlayer(48000)
 

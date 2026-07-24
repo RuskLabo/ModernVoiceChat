@@ -27,6 +27,7 @@ class QuicVoiceServer(
 
     private val clientAddresses = ConcurrentHashMap<UUID, InetSocketAddress>()
     @Volatile var packetRouterHandler: ((VoicePacket, InetSocketAddress) -> Unit)? = null
+    @Volatile var packetAuthenticator: ((UUID, UUID) -> Boolean)? = null
 
     fun registerClient(uuid: UUID, address: InetSocketAddress) {
         clientAddresses[uuid] = address
@@ -80,6 +81,11 @@ class QuicVoiceServer(
 
     fun routeIncomingPacket(packet: VoicePacket, senderAddr: InetSocketAddress) {
         val senderUuid = packet.senderUuid
+        val authenticator = packetAuthenticator
+        if (authenticator != null && !authenticator(senderUuid, packet.sessionToken)) {
+            logger.warn("[UDP-RX] Rejected unauthenticated packet for $senderUuid from $senderAddr")
+            return
+        }
         registerClient(senderUuid, senderAddr)
 
         // 空パケット（キープアライブ/ハンドシェイク）の場合はアドレス登録のみ行って早期リターン
@@ -91,9 +97,20 @@ class QuicVoiceServer(
         val recipients = router.getRecipientsForSender(senderUuid)
         logger.info("[ROUTE] Voice packet from $senderUuid (${packet.opusData.size}bytes) — recipients: $recipients — knownClients: ${clientAddresses.keys}")
 
-        packetRouterHandler?.invoke(packet, senderAddr)
-
-        val rawBytes = packet.toBytes()
+        // Spatial audio must use the server-authoritative player position.
+        val serverPosition = router.getPosition(senderUuid)
+        val forwardedPacket = if (serverPosition != null) {
+            packet.copy(
+                posX = serverPosition.x,
+                posY = serverPosition.y,
+                posZ = serverPosition.z,
+                sessionToken = VoicePacket.NO_SESSION_TOKEN
+            )
+        } else {
+            packet.copy(sessionToken = VoicePacket.NO_SESSION_TOKEN)
+        }
+        packetRouterHandler?.invoke(forwardedPacket, senderAddr)
+        val rawBytes = forwardedPacket.toBytes()
 
         for (recipientUuid in recipients) {
             val targetAddr = clientAddresses[recipientUuid]

@@ -56,7 +56,7 @@ object ModNetwork {
             S2CVoiceSecretPayload.STREAM_CODEC
         ) { payload, context ->
             context.enqueueWork {
-                Modernvoicechat.LOGGER.info("Received S2C Voice Secret token: ${payload.secretToken}, Port: ${payload.voicePort}, Host: ${payload.voiceHost}")
+                Modernvoicechat.LOGGER.info("Received voice server connection details. Port: ${payload.voicePort}, Host: ${payload.voiceHost}")
                 ClientVoiceManager.connect(payload.voicePort, payload.voiceHost, payload.secretToken)
             }
         }
@@ -69,7 +69,7 @@ object ModNetwork {
             context.enqueueWork {
                 val player = context.player()
                 if (player != null) {
-                    ServerVoiceManager.onClientVoiceConfirmed(player.uuid)
+                    ServerVoiceManager.onClientVoiceConfirmed(player.uuid, payload.secretToken)
                 }
             }
         }

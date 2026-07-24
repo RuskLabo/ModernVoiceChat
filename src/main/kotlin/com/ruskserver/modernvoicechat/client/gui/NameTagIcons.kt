@@ -10,19 +10,22 @@ import java.util.concurrent.ConcurrentHashMap
  * 発話中の他プレイヤーのネームタグ横に緑色の発話インジケーターを描画するハンドラー。
  */
 object NameTagIcons {
-    // 現在発話中のプレイヤーUUIDセット
-    private val activeSpeakers = ConcurrentHashMap.newKeySet<UUID>()
+    private const val SPEAKING_TIMEOUT_NANOS = 500_000_000L
+    private val lastPacketTimes = ConcurrentHashMap<UUID, Long>()
 
     fun setPlayerSpeaking(playerUuid: UUID, speaking: Boolean) {
         if (speaking) {
-            activeSpeakers.add(playerUuid)
+            lastPacketTimes[playerUuid] = System.nanoTime()
         } else {
-            activeSpeakers.remove(playerUuid)
+            lastPacketTimes.remove(playerUuid)
         }
     }
 
     fun isPlayerSpeaking(playerUuid: UUID): Boolean {
-        return activeSpeakers.contains(playerUuid)
+        val lastPacketTime = lastPacketTimes[playerUuid] ?: return false
+        if (System.nanoTime() - lastPacketTime <= SPEAKING_TIMEOUT_NANOS) return true
+        lastPacketTimes.remove(playerUuid, lastPacketTime)
+        return false
     }
 
     @SubscribeEvent
@@ -30,7 +33,7 @@ object NameTagIcons {
         val entity = event.entity
         val playerUuid = entity.uuid
 
-        if (activeSpeakers.contains(playerUuid)) {
+        if (isPlayerSpeaking(playerUuid)) {
             // ネームタグ横に「[🔊]」テキストバッジを追加付与
             val currentContent = event.content.copy()
             val speakingBadge = net.minecraft.network.chat.Component.literal(" 🔊").withStyle(net.minecraft.ChatFormatting.GREEN)
