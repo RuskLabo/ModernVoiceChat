@@ -8,6 +8,7 @@ import net.minecraft.world.entity.player.Player
 import net.minecraft.world.item.Item
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.TooltipFlag
+import net.minecraft.world.item.component.CustomData
 import net.minecraft.world.level.Level
 import java.util.List
 
@@ -41,6 +42,10 @@ class RadioItem(properties: Properties) : Item(properties) {
 
     companion object {
         fun getFrequency(stack: ItemStack): Double {
+            val stored = stack.getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY)
+                .copyTag()
+                .getDouble("modernvoicechat_frequency")
+            if (stored in 30.0..3000.0) return stored
             val customName = stack.get(DataComponents.CUSTOM_NAME)
             return try {
                 val text = customName?.string ?: ""
@@ -51,7 +56,10 @@ class RadioItem(properties: Properties) : Item(properties) {
         }
 
         fun setFrequency(stack: ItemStack, frequency: Double) {
-            stack.set(DataComponents.CUSTOM_NAME, Component.literal("Freq:${String.format("%.2f", frequency)}"))
+            val value = frequency.coerceIn(30.0, 3000.0)
+            CustomData.update(DataComponents.CUSTOM_DATA, stack) {
+                it.putDouble("modernvoicechat_frequency", value)
+            }
         }
     }
 }

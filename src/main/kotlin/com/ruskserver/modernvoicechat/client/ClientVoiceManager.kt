@@ -23,6 +23,8 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.DataLine
@@ -30,15 +32,33 @@ import javax.sound.sampled.SourceDataLine
 
 object ClientVoiceManager {
     private val logger = LoggerFactory.getLogger(ClientVoiceManager::class.java)
+    private val connectionExecutor = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "ModernVoiceChat-Connection").apply { isDaemon = true }
+    }
+    private val connectionGeneration = AtomicLong()
+    @Volatile private var transmitThread: Thread? = null
+    @Volatile private var transmitRunning = false
+    @Volatile private var transmitState = TransmitState()
+
+    private data class TransmitState(
+        val pttPressed: Boolean = false,
+        val holdingRadio: Boolean = false,
+        val muted: Boolean = true,
+        val inputMode: VoiceConfig.InputMode = VoiceConfig.InputMode.VOICE_ACTIVATION,
+        val x: Double = 0.0,
+        val y: Double = 0.0,
+        val z: Double = 0.0
+    )
 
     var voiceClient: QuicVoiceClient? = null
     var recorder: AudioRecorder? = null
     var player: AudioPlayer? = null
     var encoder: OpusEncoderWrapper? = null
-    var decoder: OpusDecoderWrapper? = null
     var adaptor: DynamicBitrateAdaptor? = null
+    private val decoders = java.util.concurrent.ConcurrentHashMap<UUID, OpusDecoderWrapper>()
+    private val lastReceivedSequences = java.util.concurrent.ConcurrentHashMap<UUID, Long>()
 
-    var isConnected = false
+    @Volatile var isConnected = false
         private set
 
     // マイクテスト用の専用ループバックスレッド（AudioRecorder流用 + 専用SourceDataLine直書き方式）
@@ -46,7 +66,7 @@ object ClientVoiceManager {
     @Volatile private var loopbackRunning = false
     private var loopbackSourceLine: SourceDataLine? = null
 
-    fun connect(
+    fun connectAsync(
         voicePort: Int,
         voiceHost: String = "",
         secretToken: UUID,
@@ -55,12 +75,31 @@ object ClientVoiceManager {
         val mc = Minecraft.getInstance()
         val localPlayer = mc.player ?: return
         val serverData = mc.currentServer
-
         disconnect()
+        val generation = connectionGeneration.incrementAndGet()
+        val playerUuid = localPlayer.uuid
+        val fallbackServerAddress = serverData?.ip
 
+        connectionExecutor.execute {
+            connectInternal(
+                generation, playerUuid, fallbackServerAddress, voicePort,
+                voiceHost, secretToken, certificateFingerprint
+            )
+        }
+    }
+
+    private fun connectInternal(
+        generation: Long,
+        playerUuid: UUID,
+        fallbackServerAddress: String?,
+        voicePort: Int,
+        voiceHost: String,
+        secretToken: UUID,
+        certificateFingerprint: ByteArray
+    ) {
         val targetHost = when {
             voiceHost.isNotBlank() -> voiceHost.trim()
-            serverData != null && serverData.ip.isNotBlank() -> serverData.ip.split(":")[0]
+            !fallbackServerAddress.isNullOrBlank() -> parseServerHost(fallbackServerAddress)
             else -> "127.0.0.1"
         }
         // DNS を即時解決して InetAddress に変換（遅延解決による送信失敗を防止）
@@ -68,39 +107,57 @@ object ClientVoiceManager {
             java.net.InetAddress.getByName(targetHost)
         } catch (e: Exception) {
             logger.error("Failed to resolve voice server host '$targetHost': ${e.message}")
-            java.net.InetAddress.getByName("127.0.0.1")
+            return
         }
         val serverAddress = InetSocketAddress(resolvedAddress, voicePort)
         logger.info("Voice server address resolved: $targetHost -> ${resolvedAddress.hostAddress}:$voicePort")
 
-        encoder = OpusEncoderWrapper(48000, 1, 32000)
-        decoder = OpusDecoderWrapper(48000, 1)
-        adaptor = DynamicBitrateAdaptor(encoder!!)
-
-        voiceClient = QuicVoiceClient(
-            localPlayer.uuid,
+        val newEncoder = OpusEncoderWrapper(48000, 1, 32000)
+        if (!newEncoder.isInitialized) {
+            logger.error("Could not initialize the native Opus encoder")
+            return
+        }
+        val newAdaptor = DynamicBitrateAdaptor(newEncoder)
+        val newClient = QuicVoiceClient(
+            playerUuid,
             serverAddress,
-            adaptor,
+            newAdaptor,
             secretToken,
             certificateFingerprint
         )
-        recorder = AudioRecorder(48000, 960)
-        player = AudioPlayer(48000)
-
-        voiceClient?.setPacketListener { packet ->
+        val newRecorder = AudioRecorder(48000, 960)
+        val newPlayer = AudioPlayer(48000)
+        newClient.setPacketListener { packet ->
             handleIncomingPacket(packet)
         }
-
-        if (voiceClient?.start() != true) {
+        if (!newClient.start() || !newRecorder.start()) {
             logger.error("Could not connect to authenticated QUIC voice server")
-            disconnect()
+            newClient.stop()
+            newRecorder.stop()
+            newPlayer.stopAll()
             return
         }
-        recorder?.start()
-        isConnected = true
+        synchronized(this) {
+            if (generation != connectionGeneration.get()) {
+                newClient.stop()
+                newRecorder.stop()
+                newPlayer.stopAll()
+                return
+            }
+            encoder = newEncoder
+            adaptor = newAdaptor
+            voiceClient = newClient
+            recorder = newRecorder
+            player = newPlayer
+            isConnected = true
+        }
+        startTransmitLoop(generation, newRecorder, newClient, newEncoder)
         logger.info("ClientVoiceManager connected to voice server (resolved: ${resolvedAddress.hostAddress}:${serverAddress.port})")
-
-        PacketDistributor.sendToServer(ModNetwork.C2SVoiceSecretPayload(secretToken))
+        Minecraft.getInstance().tell {
+            if (generation == connectionGeneration.get()) {
+                PacketDistributor.sendToServer(ModNetwork.C2SVoiceSecretPayload(secretToken))
+            }
+        }
     }
 
     private fun handleIncomingPacket(packet: VoicePacket) {
@@ -111,13 +168,76 @@ object ClientVoiceManager {
         if (localPlayer != null && packet.senderUuid == localPlayer.uuid) return
 
         logger.info("[AUDIO-RX] Received voice from ${packet.senderUuid}, opusLen=${packet.opusData.size}")
-        val pcm = decoder?.decode(packet.opusData, 960)
-        if (pcm == null) {
-            logger.warn("[AUDIO-RX] Decoder returned null for packet from ${packet.senderUuid}")
-            return
+        val decoder = decoders.computeIfAbsent(packet.senderUuid) { OpusDecoderWrapper(48000, 1) }
+        val previousSequence = lastReceivedSequences[packet.senderUuid]
+        if (previousSequence != null && packet.sequenceNumber <= previousSequence) return
+        if (previousSequence != null) {
+            val missing = (packet.sequenceNumber - previousSequence - 1).coerceIn(0, 3)
+            repeat(missing.toInt()) {
+                val concealed = decoder.decode(null, 960)
+                player?.playAudio(
+                    packet.senderUuid, concealed, packet.posX, packet.posY, packet.posZ,
+                    packet.isRadio, packet.quality
+                )
+            }
         }
+        lastReceivedSequences[packet.senderUuid] = packet.sequenceNumber
+        val pcm = decoder.decode(packet.opusData, 960)
         player?.playAudio(packet.senderUuid, pcm, packet.posX, packet.posY, packet.posZ, packet.isRadio, packet.quality)
         NameTagIcons.setPlayerSpeaking(packet.senderUuid, true)
+    }
+
+    private fun startTransmitLoop(
+        generation: Long,
+        source: AudioRecorder,
+        client: QuicVoiceClient,
+        opusEncoder: OpusEncoderWrapper
+    ) {
+        transmitRunning = true
+        transmitThread = Thread({
+            while (transmitRunning && generation == connectionGeneration.get()) {
+                try {
+                    val frame = source.readFrame(timeoutMs = 25L) ?: continue
+                    val state = transmitState
+                    if (state.muted) {
+                        VoiceHudOverlay.isSpeakingCurrent = false
+                        continue
+                    }
+                    val (pcm, voiceDetected) = frame
+                    val shouldTransmit = if (state.holdingRadio) {
+                        state.inputMode == VoiceConfig.InputMode.PUSH_TO_TALK || voiceDetected
+                    } else {
+                        if (state.inputMode == VoiceConfig.InputMode.PUSH_TO_TALK) {
+                            state.pttPressed
+                        } else {
+                            voiceDetected
+                        }
+                    }
+                    VoiceHudOverlay.isSpeakingCurrent = shouldTransmit
+                    if (!shouldTransmit) continue
+                    val encoded = opusEncoder.encode(pcm, 960)
+                    if (encoded.isEmpty()) continue
+                    client.sendHandler?.invoke(
+                        VoicePacket(
+                            senderUuid = client.playerUuid,
+                            sequenceNumber = 0L,
+                            opusData = encoded,
+                            posX = state.x,
+                            posY = state.y,
+                            posZ = state.z,
+                            isRadio = state.holdingRadio
+                        )
+                    )
+                } catch (_: InterruptedException) {
+                    break
+                } catch (e: Exception) {
+                    if (transmitRunning) logger.warn("Voice transmit loop error: ${e.message}")
+                }
+            }
+        }, "ModernVoiceChat-Transmit").apply {
+            isDaemon = true
+            start()
+        }
     }
 
     // ===========================================================================
@@ -260,67 +380,26 @@ object ClientVoiceManager {
 
         // 1. マイクテストモードの管理（ループバックは専用スレッドが担当）
         if (VoiceConfig.isMicTestingEnabled) {
+            transmitState = transmitState.copy(muted = true)
             if (!loopbackRunning) startLoopback()
             return
         } else {
             if (loopbackRunning) stopLoopback()
         }
 
-        // 2. 本番マルチサーバー送信（ClientTickで全フレームをネットワーク送信）
+        // 2. Capture is sent by the dedicated 20 ms transmit loop. The game tick
+        // only publishes a thread-safe snapshot of input and player state.
         if (!isConnected || voiceClient == null) return
-
-        if (VoiceConfig.isMicMuted) {
-            VoiceHudOverlay.isSpeakingCurrent = false
-            return
-        }
-
         val isPttPressed = KeyMappings.PUSH_TO_TALK.isDown
         val isHoldingRadio = localPlayer.isUsingItem && localPlayer.useItem.item is com.ruskserver.modernvoicechat.item.RadioItem
-        var anySpeaking = false
-
-        // ネットワーク送信はキューを全消費してOK
-        while (true) {
-            val framePair = recorder?.readFrame() ?: break
-            val (pcm, isSpeaking) = framePair
-
-            val isVoiceDetected = when (VoiceConfig.inputMode) {
-                VoiceConfig.InputMode.PUSH_TO_TALK -> isPttPressed
-                VoiceConfig.InputMode.VOICE_ACTIVATION -> isSpeaking
-            }
-
-            // 無線機使用時 (isHoldingRadio) は右クリック長押し自体を送信意思とするが、
-            // PUSH_TO_TALK モード時は isSpeaking による自動検知を行わず (相手の声をマイクが拾ってループするのを防ぐ)、
-            // 無線構え中 OR PTTキー押下中に入力モードの設定に従って送信する
-            val shouldTransmit = if (isHoldingRadio) {
-                when (VoiceConfig.inputMode) {
-                    VoiceConfig.InputMode.PUSH_TO_TALK -> true // 右クリック長押し中＝無線PTT送信中
-                    VoiceConfig.InputMode.VOICE_ACTIVATION -> isSpeaking
-                }
-            } else {
-                isVoiceDetected
-            }
-
-            if (shouldTransmit) {
-                anySpeaking = true
-                val encodedOpus = encoder?.encode(pcm, 960)
-                if (encodedOpus != null && encodedOpus.isNotEmpty()) {
-                    // 無線機持続長押し中であれば isRadio パケットを優先送信
-                    val packet = VoicePacket(
-                        senderUuid = localPlayer.uuid,
-                        sequenceNumber = System.currentTimeMillis(),
-                        opusData = encodedOpus,
-                        posX = localPlayer.x,
-                        posY = localPlayer.y,
-                        posZ = localPlayer.z,
-                        isRadio = isHoldingRadio,
-                        quality = 1.0f
-                    )
-                    voiceClient?.sendHandler?.invoke(packet)
-                }
-            }
+        transmitState = TransmitState(
+            isPttPressed, isHoldingRadio, VoiceConfig.isMicMuted,
+            VoiceConfig.inputMode, localPlayer.x, localPlayer.y, localPlayer.z
+        )
+        if (VoiceConfig.isMicMuted) {
+            recorder?.discardPendingFrames()
+            VoiceHudOverlay.isSpeakingCurrent = false
         }
-
-        VoiceHudOverlay.isSpeakingCurrent = anySpeaking
     }
 
     @SubscribeEvent
@@ -328,14 +407,24 @@ object ClientVoiceManager {
         disconnect()
     }
 
+    @Synchronized
     fun disconnect() {
+        connectionGeneration.incrementAndGet()
+        transmitRunning = false
+        transmitThread?.interrupt()
+        transmitThread = null
         stopLoopback()
         if (!isConnected) {
             // テストのみ使用時のリソース解放
             recorder?.stop()
             player?.stopAll()
+            encoder?.close()
+            decoders.values.forEach { it.close() }
+            decoders.clear()
+            lastReceivedSequences.clear()
             recorder = null
             player = null
+            encoder = null
             return
         }
         voiceClient?.stop()
@@ -345,11 +434,30 @@ object ClientVoiceManager {
         voiceClient = null
         recorder = null
         player = null
+        encoder?.close()
         encoder = null
-        decoder = null
+        decoders.values.forEach { it.close() }
+        decoders.clear()
+        lastReceivedSequences.clear()
         adaptor = null
         isConnected = false
         VoiceHudOverlay.isSpeakingCurrent = false
         logger.info("ClientVoiceManager disconnected")
+    }
+
+    private fun parseServerHost(address: String): String {
+        val trimmed = address.trim()
+        if (trimmed.startsWith("[")) {
+            return trimmed.substringAfter("[").substringBefore("]")
+        }
+        return if (trimmed.count { it == ':' } == 1) trimmed.substringBefore(":") else trimmed
+    }
+
+    fun reloadAudioDevices() {
+        val restartLoopback = loopbackRunning
+        if (restartLoopback) stopLoopback()
+        recorder?.restart()
+        player?.reloadOutputDevice()
+        if (restartLoopback) startLoopback()
     }
 }

@@ -27,6 +27,7 @@ class AudioPlayer(
     private val logger = LoggerFactory.getLogger(AudioPlayer::class.java)
 
     @Volatile private var masterLine: SourceDataLine? = null
+    @Volatile private var nextLineRetryNanos = 0L
 
     data class AudioFrame(
         val pcm: ShortArray,
@@ -143,11 +144,16 @@ class AudioPlayer(
                     }
 
                     if (hasAudio) {
+                        var peak = 1.0f
+                        for (i in 0 until frameSizeSamples) {
+                            peak = maxOf(peak, abs(mixedPcmL[i]), abs(mixedPcmR[i]))
+                        }
+                        val limiterGain = if (peak > 30000.0f) 30000.0f / peak else 1.0f
                         val bb = ByteBuffer.wrap(outputBytes).order(ByteOrder.LITTLE_ENDIAN)
                         bb.clear()
                         for (i in 0 until frameSizeSamples) {
-                            val sampleL = mixedPcmL[i].toInt().coerceIn(-32768, 32767).toShort()
-                            val sampleR = mixedPcmR[i].toInt().coerceIn(-32768, 32767).toShort()
+                            val sampleL = (mixedPcmL[i] * limiterGain).toInt().coerceIn(-32768, 32767).toShort()
+                            val sampleR = (mixedPcmR[i] * limiterGain).toInt().coerceIn(-32768, 32767).toShort()
                             bb.putShort(sampleL)
                             bb.putShort(sampleR)
                         }
@@ -192,6 +198,7 @@ class AudioPlayer(
     @Synchronized
     private fun getOrCreateMasterLine(): SourceDataLine? {
         if (masterLine != null && masterLine!!.isOpen) return masterLine
+        if (System.nanoTime() < nextLineRetryNanos) return null
         return initMasterLine()
     }
 
@@ -221,8 +228,19 @@ class AudioPlayer(
             line
         } catch (e: Exception) {
             logger.error("Failed to create Master SourceDataLine for AudioPlayer", e)
+            nextLineRetryNanos = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
             null
         }
+    }
+
+    @Synchronized
+    fun reloadOutputDevice() {
+        try {
+            masterLine?.stop()
+            masterLine?.close()
+        } catch (_: Exception) {}
+        masterLine = null
+        nextLineRetryNanos = 0L
     }
 
     fun stopPlayer(playerUuid: UUID) {
@@ -241,4 +259,3 @@ class AudioPlayer(
         masterLine = null
     }
 }
-

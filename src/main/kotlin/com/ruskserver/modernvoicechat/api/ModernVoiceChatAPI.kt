@@ -22,8 +22,6 @@ object ModernVoiceChatAPI {
     fun getClientApi(): VoiceChatClientAPI = clientApiInstance
 
     private class ServerApiImpl : VoiceChatServerAPI {
-        private val mutedPlayers = ConcurrentHashMap.newKeySet<UUID>()
-
         override fun isPlayerSpeaking(playerUuid: UUID): Boolean {
             return ServerVoiceManager.isPlayerSpeaking(playerUuid)
         }
@@ -43,7 +41,7 @@ object ModernVoiceChatAPI {
         }
 
         override fun setPlayerMutedByServer(playerUuid: UUID, muted: Boolean) {
-            if (muted) mutedPlayers.add(playerUuid) else mutedPlayers.remove(playerUuid)
+            ServerVoiceManager.setPlayerMuted(playerUuid, muted)
         }
 
         override fun createVoiceLink(playerA: UUID, playerB: UUID, bidirectional: Boolean, isolateProximity: Boolean) {
@@ -73,7 +71,7 @@ object ModernVoiceChatAPI {
 
     private class ClientApiImpl : VoiceChatClientAPI {
         override fun isLocalPlayerSpeaking(): Boolean {
-            return VoiceConfig.isMicMuted.not()
+            return com.ruskserver.modernvoicechat.client.gui.VoiceHudOverlay.isSpeakingCurrent
         }
 
         override fun isMicrophoneMuted(): Boolean = VoiceConfig.isMicMuted

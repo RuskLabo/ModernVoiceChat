@@ -37,6 +37,8 @@ object VoiceConfig {
         var selectedMicrophoneDevice: String = AudioDeviceUtils.DEFAULT_DEVICE,
         var selectedSpeakerDevice: String = AudioDeviceUtils.DEFAULT_DEVICE,
         var isTutorialCompleted: Boolean = false,
+        var isMicMuted: Boolean = false,
+        var isSpeakerMuted: Boolean = false,
         var playerVolumes: MutableMap<String, Int> = mutableMapOf()
     )
 
@@ -79,8 +81,12 @@ object VoiceConfig {
     }
 
     // ランタイム状態
-    var isMicMuted: Boolean = false
-    var isSpeakerMuted: Boolean = false
+    var isMicMuted: Boolean
+        get() = data.isMicMuted
+        set(value) { data.isMicMuted = value }
+    var isSpeakerMuted: Boolean
+        get() = data.isSpeakerMuted
+        set(value) { data.isSpeakerMuted = value }
     var isMicTestingEnabled: Boolean = false
 
     fun load() {
@@ -229,7 +235,10 @@ object VoiceConfig {
             )
             .setDefaultValue(AudioDeviceUtils.DEFAULT_DEVICE)
             .setNameProvider { deviceName -> Component.literal(deviceName) }
-            .setSaveConsumer { newValue -> selectedMicrophoneDevice = newValue }
+            .setSaveConsumer { newValue ->
+                selectedMicrophoneDevice = newValue
+                ClientVoiceManager.reloadAudioDevices()
+            }
             .build()
         )
 
@@ -241,7 +250,10 @@ object VoiceConfig {
             )
             .setDefaultValue(AudioDeviceUtils.DEFAULT_DEVICE)
             .setNameProvider { deviceName -> Component.literal(deviceName) }
-            .setSaveConsumer { newValue -> selectedSpeakerDevice = newValue }
+            .setSaveConsumer { newValue ->
+                selectedSpeakerDevice = newValue
+                ClientVoiceManager.reloadAudioDevices()
+            }
             .build()
         )
 

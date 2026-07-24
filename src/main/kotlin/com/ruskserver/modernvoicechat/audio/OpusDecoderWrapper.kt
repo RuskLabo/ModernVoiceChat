@@ -9,7 +9,7 @@ import org.slf4j.LoggerFactory
 class OpusDecoderWrapper(
     val sampleRate: Int = 48000,
     val channels: Int = 1
-) {
+) : AutoCloseable {
     private val logger = LoggerFactory.getLogger(OpusDecoderWrapper::class.java)
     private var decoder: OpusDecoder? = null
 
@@ -32,5 +32,12 @@ class OpusDecoderWrapper(
         } catch (e: Throwable) {
             ShortArray(frameSize * channels)
         }
+    }
+
+    val isInitialized: Boolean get() = decoder?.isClosed == false
+
+    override fun close() {
+        decoder?.close()
+        decoder = null
     }
 }

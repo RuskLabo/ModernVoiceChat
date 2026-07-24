@@ -21,6 +21,7 @@ class SFURouter(
     private val playerPositions = ConcurrentHashMap<UUID, PlayerPosition>()
     private val directLinks = ConcurrentHashMap<UUID, MutableSet<UUID>>()
     private val isolatedPlayers = ConcurrentHashMap.newKeySet<UUID>()
+    private val isolatingLinks = ConcurrentHashMap<UUID, MutableSet<UUID>>()
     private val voiceGroups = ConcurrentHashMap<UUID, MutableSet<UUID>>()
 
     fun updatePosition(playerUuid: UUID, position: PlayerPosition) {
@@ -32,6 +33,10 @@ class SFURouter(
     fun removePlayer(playerUuid: UUID) {
         playerPositions.remove(playerUuid)
         directLinks.remove(playerUuid)
+        isolatingLinks.remove(playerUuid)
+        for ((_, links) in directLinks) links.remove(playerUuid)
+        for ((_, links) in isolatingLinks) links.remove(playerUuid)
+        refreshIsolation()
         isolatedPlayers.remove(playerUuid)
         for ((_, members) in voiceGroups) {
             members.remove(playerUuid)
@@ -45,8 +50,11 @@ class SFURouter(
             directLinks.computeIfAbsent(playerB) { ConcurrentHashMap.newKeySet() }.add(playerA)
         }
         if (isolateProximity) {
-            isolatedPlayers.add(playerA)
-            if (bidirectional) isolatedPlayers.add(playerB)
+            isolatingLinks.computeIfAbsent(playerA) { ConcurrentHashMap.newKeySet() }.add(playerB)
+            if (bidirectional) {
+                isolatingLinks.computeIfAbsent(playerB) { ConcurrentHashMap.newKeySet() }.add(playerA)
+            }
+            refreshIsolation()
         }
     }
 
@@ -55,8 +63,9 @@ class SFURouter(
         if (bidirectional) {
             directLinks[playerB]?.remove(playerA)
         }
-        isolatedPlayers.remove(playerA)
-        isolatedPlayers.remove(playerB)
+        isolatingLinks[playerA]?.remove(playerB)
+        if (bidirectional) isolatingLinks[playerB]?.remove(playerA)
+        refreshIsolation()
     }
 
     // ボイスグループ
@@ -123,6 +132,26 @@ class SFURouter(
         val dy = posA.y - posB.y
         val dz = posA.z - posB.z
         return Math.sqrt(dx * dx + dy * dy + dz * dz)
+    }
+
+    fun getPlayersWithinDistance(senderUuid: UUID, distance: Double): Map<UUID, Double> {
+        val senderPos = playerPositions[senderUuid] ?: return emptyMap()
+        val maxDistanceSq = distance * distance
+        return playerPositions.entries.mapNotNull { (uuid, pos) ->
+            if (uuid == senderUuid || pos.dimension != senderPos.dimension) return@mapNotNull null
+            val dx = pos.x - senderPos.x
+            val dy = pos.y - senderPos.y
+            val dz = pos.z - senderPos.z
+            val squared = dx * dx + dy * dy + dz * dz
+            if (squared <= maxDistanceSq) uuid to Math.sqrt(squared) else null
+        }.toMap()
+    }
+
+    private fun refreshIsolation() {
+        isolatedPlayers.clear()
+        isolatingLinks.forEach { (uuid, links) ->
+            if (links.isNotEmpty()) isolatedPlayers.add(uuid)
+        }
     }
 
     /**

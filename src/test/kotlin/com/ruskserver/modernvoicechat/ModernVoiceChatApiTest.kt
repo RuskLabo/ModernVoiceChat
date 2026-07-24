@@ -10,6 +10,25 @@ import java.util.UUID
 class ModernVoiceChatApiTest {
 
     @Test
+    fun `isolating links remain correct when one link is removed or player leaves`() {
+        val router = SFURouter(24.0)
+        val a = UUID.randomUUID()
+        val b = UUID.randomUUID()
+        val c = UUID.randomUUID()
+        val nearby = UUID.randomUUID()
+        for (uuid in listOf(a, b, c, nearby)) {
+            router.updatePosition(uuid, PlayerPosition(0.0, 64.0, 0.0, "overworld"))
+        }
+        router.addDirectLink(a, b, isolateProximity = true)
+        router.addDirectLink(a, c, isolateProximity = true)
+        router.removeDirectLink(a, b)
+        assertFalse(router.getRecipientsForSender(a).contains(nearby))
+
+        router.removePlayer(c)
+        assertTrue(router.getRecipientsForSender(a).contains(nearby))
+    }
+
+    @Test
     fun testDirectVoiceLinkAndGroupApi() {
         val router = SFURouter(maxDistance = 24.0)
 

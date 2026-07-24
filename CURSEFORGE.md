@@ -2,16 +2,20 @@
 
 **ModernVoiceChat** is a high-performance, next-generation **3D Spatial & Radio Voice Chat Mod** for **Minecraft 1.21.1 (NeoForge)**.
 
-Unlike traditional voice mods that rely on OS-specific C/C++ native libraries or Netty native binaries, **ModernVoiceChat** uses a **100% Pure Java QUIC (kwik / RFC 9000)** implementation. This guarantees seamless, crash-free performance across **Windows, Linux, and macOS (including Apple Silicon M1/M2/M3)** without any setup hassle!
+ModernVoiceChat uses the pure-Java **kwik QUIC/TLS** transport. Audio coding is provided by Opus4J, which bundles platform-specific native Opus binaries.
 
 ---
 
 ## ✨ Key Features
 
-### ⚡ 100% Native-Free & Cross-Platform (Pure Java QUIC)
+### ⚡ Secure Cross-Platform QUIC Transport
 - Powered by `kwik` (Pure Java QUIC / RFC 9000).
-- Zero native binaries (`.dll`, `.so`, `.dylib`) required.
-- Superior compatibility for all server hostings and client OS environments.
+- Voice traffic uses TLS 1.3 and QUIC Datagram (RFC 9221).
+- Opus4J supplies native codec binaries for supported Windows, Linux, and macOS platforms.
+
+### Required client dependencies
+- Kotlin for Forge 5.3.0 or later
+- Cloth Config API 15.0.127 or later
 
 ### 🎙️ Immersive 3D Spatial Audio
 - Real-time positional voice chat calculated dynamically based on player distance and head orientation.

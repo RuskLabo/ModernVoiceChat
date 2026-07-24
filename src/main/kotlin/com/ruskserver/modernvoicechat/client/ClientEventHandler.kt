@@ -21,6 +21,7 @@ object ClientEventHandler {
         // Mキー: マイクミュート切替
         while (KeyMappings.MUTE_MIC.consumeClick()) {
             VoiceConfig.isMicMuted = !VoiceConfig.isMicMuted
+            VoiceConfig.save()
             val msg = if (VoiceConfig.isMicMuted) "message.modernvoicechat.mic_muted" else "message.modernvoicechat.mic_unmuted"
             mc.player?.displayClientMessage(net.minecraft.network.chat.Component.translatable(msg), true)
         }
@@ -28,6 +29,7 @@ object ClientEventHandler {
         // Nキー: スピーカーミュート切替
         while (KeyMappings.MUTE_SPEAKER.consumeClick()) {
             VoiceConfig.isSpeakerMuted = !VoiceConfig.isSpeakerMuted
+            VoiceConfig.save()
             val msg = if (VoiceConfig.isSpeakerMuted) "message.modernvoicechat.speaker_muted" else "message.modernvoicechat.speaker_unmuted"
             mc.player?.displayClientMessage(net.minecraft.network.chat.Component.translatable(msg), true)
         }

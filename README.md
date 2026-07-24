@@ -1,13 +1,17 @@
 # 🎙️ ModernVoiceChat
 
-**ModernVoiceChat** は、Minecraft 1.21.1 (NeoForge) 向けに開発された、ネイティブ非依存（Pure Java QUIC）の次世代リアルタイム 3D 空間ボイスチャット ＆ 無線 Mod です。
+**ModernVoiceChat** は、Minecraft 1.21.1 (NeoForge) 向けの、TLS 1.3 QUIC を使用するリアルタイム 3D 空間ボイスチャット＆無線 Mod です。
 
 ---
 
+> Runtime note: QUIC/TLS transport is implemented in pure Java with kwik, while
+> Opus4J includes platform-specific native Opus codec binaries. Clients must
+> install Kotlin for Forge 5.3.0+ and Cloth Config API 15.0.127+.
+
 ## ✨ 主な特徴
 
-- ⚡ **ネイティブ非依存 (Pure Java QUIC / kwik)**:
-  - `Netty Native QUIC` や C++ C/C++ ネイティブライブラリに一切依存せず、Pure Java の QUIC ライブラリ (`kwik` / RFC 9000) を採用。
+- ⚡ **Pure Java QUIC トランスポート (kwik)**:
+  - 通信には Pure Java の `kwik`、音声コーデックには各対応OS向けネイティブOpusを同梱するOpus4Jを使用します。
   - Windows、Linux、macOS (Intel / Apple Silicon) すべてのOS環境でクラッシュなく動作します。
 - 🎙️ **3D 空間ボイスチャット (Spatial Audio)**:
   - プレイヤー同士の距離（デフォルト 24m）および空間位置に基づくリアルタイム 3D 空間音響。

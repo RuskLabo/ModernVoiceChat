@@ -13,6 +13,8 @@ import java.security.MessageDigest
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class QuicVoiceClient(
     val playerUuid: UUID,
@@ -27,6 +29,9 @@ class QuicVoiceClient(
     @Volatile private var running = false
     @Volatile private var connection: QuicClientConnection? = null
     private val sequenceCounter = AtomicLong(0)
+    private var lastMetricsNanos = System.nanoTime()
+    private var lastPacketsSent = 0L
+    private var lastPacketsLost = 0L
 
     fun setPacketListener(listener: (VoicePacket) -> Unit) {
         packetListener = listener
@@ -78,7 +83,15 @@ class QuicVoiceClient(
                 packetListener?.invoke(packet)
             }
 
-            authenticate(newConnection)
+            val authenticationExecutor = Executors.newSingleThreadExecutor { task ->
+                Thread(task, "ModernVoiceChat-QuicAuthentication").apply { isDaemon = true }
+            }
+            try {
+                val authentication = authenticationExecutor.submit { authenticate(newConnection) }
+                authentication.get(5, TimeUnit.SECONDS)
+            } finally {
+                authenticationExecutor.shutdownNow()
+            }
             newConnection.keepAlive(10)
             connection = newConnection
             running = true
@@ -139,15 +152,35 @@ class QuicVoiceClient(
         val quicConnection = connection ?: return
         try {
             val packetWithoutCredentials = packet.copy(senderUuid = playerUuid)
+                .copy(sequenceNumber = sequenceCounter.incrementAndGet())
             val bytes = packetWithoutCredentials.toBytes()
             require(bytes.size <= quicConnection.maxDatagramDataSize()) {
                 "Voice packet exceeds negotiated QUIC datagram size"
             }
             quicConnection.sendDatagram(bytes)
             adaptor?.onPacketSent(bytes.size)
+            updateNetworkMetrics(quicConnection)
         } catch (e: Exception) {
             logger.warn("Error sending QUIC voice datagram: ${e.message}")
         }
+    }
+
+    @Synchronized
+    private fun updateNetworkMetrics(quicConnection: QuicClientConnection) {
+        val now = System.nanoTime()
+        if (now - lastMetricsNanos < TimeUnit.SECONDS.toNanos(1)) return
+        val stats = quicConnection.stats
+        val sent = (stats.packetsSent() - lastPacketsSent).coerceAtLeast(0)
+        val lost = (stats.lostPackets() - lastPacketsLost).coerceAtLeast(0)
+        val lossPercent = if (sent + lost > 0) {
+            (lost * 100.0 / (sent + lost)).toFloat()
+        } else {
+            0.0f
+        }
+        adaptor?.updateMetrics(stats.smoothedRtt().toLong(), lossPercent)
+        lastPacketsSent = stats.packetsSent()
+        lastPacketsLost = stats.lostPackets()
+        lastMetricsNanos = now
     }
 
     fun stop() {

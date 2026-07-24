@@ -10,7 +10,7 @@ class OpusEncoderWrapper(
     val sampleRate: Int = 48000,
     val channels: Int = 1,
     initialBitrateBps: Int = 32000
-) {
+) : AutoCloseable {
     private val logger = LoggerFactory.getLogger(OpusEncoderWrapper::class.java)
     private var encoder: OpusEncoder? = null
 
@@ -20,6 +20,7 @@ class OpusEncoderWrapper(
     init {
         try {
             encoder = OpusEncoder(sampleRate, channels, OpusEncoder.Application.VOIP)
+            encoder?.maxPayloadSize = (initialBitrateBps / 400).coerceIn(20, 4000)
             logger.info("OpusEncoder initialized successfully")
         } catch (e: Throwable) {
             logger.error("Failed to initialize OpusEncoder (native library may be missing): ${e.message}", e)
@@ -29,9 +30,11 @@ class OpusEncoderWrapper(
     fun setBitrate(bitrateBps: Int) {
         val clamped = bitrateBps.coerceIn(8000, 64000)
         currentBitrate = clamped
+        encoder?.maxPayloadSize = (clamped / 400).coerceIn(20, 4000)
     }
 
     fun setPacketLossPercentage(lossPercentage: Int) {
+        encoder?.maxPacketLossPercentage = lossPercentage.coerceIn(0, 100) / 100.0f
     }
 
     /**
@@ -44,5 +47,12 @@ class OpusEncoderWrapper(
         } catch (e: Throwable) {
             ByteArray(0)
         }
+    }
+
+    val isInitialized: Boolean get() = encoder?.isClosed == false
+
+    override fun close() {
+        encoder?.close()
+        encoder = null
     }
 }

@@ -15,6 +15,10 @@ import java.security.Signature
 import java.security.cert.CertificateFactory
 import java.security.spec.PKCS8EncodedKeySpec
 import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.TimeZone
+import java.util.concurrent.TimeUnit
 import java.util.Base64
 
 /**
@@ -37,7 +41,20 @@ object SelfSignedCertUtils {
         val certFile = File(certDir, "cert.pem")
 
         if (keyFile.isFile && certFile.isFile) {
-            return CertKeyPair(keyFile, certFile)
+            val pair = CertKeyPair(keyFile, certFile)
+            try {
+                val certificate = FileInputStream(certFile).use {
+                    CertificateFactory.getInstance("X.509").generateCertificate(it)
+                } as java.security.cert.X509Certificate
+                certificate.checkValidity(Date(System.currentTimeMillis() + TimeUnit.DAYS.toMillis(30)))
+                certificate.verify(certificate.publicKey)
+                loadKeyStore(pair, "validation".toCharArray())
+                return pair
+            } catch (e: Exception) {
+                logger.warn("Existing QUIC certificate is invalid or near expiry; rotating it: ${e.message}")
+                keyFile.delete()
+                certFile.delete()
+            }
         }
 
         try {
@@ -126,12 +143,11 @@ object SelfSignedCertUtils {
             'V'.code.toByte(), 'o'.code.toByte(), 'i'.code.toByte(), 'c'.code.toByte(), 'e'.code.toByte(), 'C'.code.toByte(),
             'h'.code.toByte(), 'a'.code.toByte(), 't'.code.toByte(), 'S'.code.toByte(), 'r'.code.toByte(), 'v'.code.toByte()
         ))
-        // Validity: UTCTime
-        tbsStream.write(byteArrayOf(
-            0x30, 0x1e,
-            0x17, 0x0d, '2'.code.toByte(), '4'.code.toByte(), '0'.code.toByte(), '1'.code.toByte(), '0'.code.toByte(), '1'.code.toByte(), '0'.code.toByte(), '0'.code.toByte(), '0'.code.toByte(), '0'.code.toByte(), '0'.code.toByte(), '0'.code.toByte(), 'Z'.code.toByte(),
-            0x17, 0x0d, '3'.code.toByte(), '8'.code.toByte(), '0'.code.toByte(), '1'.code.toByte(), '0'.code.toByte(), '1'.code.toByte(), '0'.code.toByte(), '0'.code.toByte(), '0'.code.toByte(), '0'.code.toByte(), '0'.code.toByte(), '0'.code.toByte(), 'Z'.code.toByte()
-        ))
+        val notBefore = Date(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1))
+        val notAfter = Date(System.currentTimeMillis() + TimeUnit.DAYS.toMillis(3650))
+        val validityContent = derUtcTime(notBefore) + derUtcTime(notAfter)
+        tbsStream.write(byteArrayOf(0x30, validityContent.size.toByte()))
+        tbsStream.write(validityContent)
         // Subject: RDN Sequence (CN=ModernVoiceChat)
         tbsStream.write(byteArrayOf(
             0x30, 0x1d, 0x31, 0x1b, 0x30, 0x19, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c, 0x12,
@@ -181,5 +197,13 @@ object SelfSignedCertUtils {
             stream.write((length shr 8) and 0xFF)
             stream.write(length and 0xFF)
         }
+    }
+
+    private fun derUtcTime(date: Date): ByteArray {
+        val formatter = SimpleDateFormat("yyMMddHHmmss'Z'").apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+        val value = formatter.format(date).toByteArray(Charsets.US_ASCII)
+        return byteArrayOf(0x17, value.size.toByte()) + value
     }
 }

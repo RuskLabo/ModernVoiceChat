@@ -7,6 +7,8 @@ import net.minecraft.client.gui.components.Button
 import net.minecraft.client.gui.components.EditBox
 import net.minecraft.client.gui.screens.Screen
 import net.minecraft.network.chat.Component
+import net.neoforged.neoforge.network.PacketDistributor
+import com.ruskserver.modernvoicechat.network.ModNetwork
 
 /**
  * 無線機アイテムの周波数・チャンネル変更 UI スクリーン。
@@ -40,8 +42,9 @@ class RadioScreen : Screen(Component.literal("無線機 周波数設定")) {
             Button.builder(Component.literal("設定保存")) { _ ->
                 try {
                     val newFreq = freqEditBox.value.toDouble()
-                    if (currentStack != null) {
+                    if (currentStack != null && newFreq.isFinite() && newFreq in 30.0..3000.0) {
                         RadioItem.setFrequency(currentStack, newFreq)
+                        PacketDistributor.sendToServer(ModNetwork.C2SRadioFrequencyPayload(newFreq))
                     }
                 } catch (_: Exception) {}
                 this.onClose()

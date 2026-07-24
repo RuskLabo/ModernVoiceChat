@@ -25,10 +25,17 @@ object ServerVoiceManager {
     val playerTokens = ConcurrentHashMap<UUID, UUID>()
     private val activePlayers = ConcurrentHashMap<UUID, ServerPlayer>()
     private val speakingPlayers = ConcurrentHashMap.newKeySet<UUID>()
+    private val serverMutedPlayers = ConcurrentHashMap.newKeySet<UUID>()
+    private val lastRadioTransmission = ConcurrentHashMap<UUID, Long>()
+    private val lastVoiceTransmission = ConcurrentHashMap<UUID, Long>()
 
     fun getPlayerByUuid(uuid: UUID): ServerPlayer? = activePlayers[uuid]
 
     fun isPlayerSpeaking(uuid: UUID): Boolean = speakingPlayers.contains(uuid)
+    fun isPlayerMuted(uuid: UUID): Boolean = serverMutedPlayers.contains(uuid)
+    fun setPlayerMuted(uuid: UUID, muted: Boolean) {
+        if (muted) serverMutedPlayers.add(uuid) else serverMutedPlayers.remove(uuid)
+    }
 
     fun setPlayerSpeaking(uuid: UUID, speaking: Boolean) {
         if (speaking) {
@@ -49,6 +56,38 @@ object ServerVoiceManager {
         voiceServer = QuicVoiceServer(port, router)
         voiceServer?.packetAuthenticator = { playerUuid, token ->
             playerTokens[playerUuid] == token && activePlayers.containsKey(playerUuid)
+        }
+        voiceServer?.senderAllowedProvider = { !serverMutedPlayers.contains(it) }
+        voiceServer?.voicePacketListener = { playerUuid ->
+            val firstPacket = lastVoiceTransmission.put(playerUuid, System.nanoTime()) == null
+            if (firstPacket) {
+                activePlayers[playerUuid]?.server?.execute { setPlayerSpeaking(playerUuid, true) }
+            }
+        }
+        voiceServer?.radioFrequencyProvider = { playerUuid ->
+            activePlayers[playerUuid]?.let { player ->
+                (player.inventory.items + player.inventory.offhand)
+                    .firstOrNull { it.item is com.ruskserver.modernvoicechat.item.RadioItem }
+                    ?.let(com.ruskserver.modernvoicechat.item.RadioItem::getFrequency)
+            }
+        }
+        voiceServer?.radioTransmittingProvider = { playerUuid ->
+            activePlayers[playerUuid]?.let { player ->
+                player.isUsingItem &&
+                    player.useItem.item is com.ruskserver.modernvoicechat.item.RadioItem
+            } == true
+        }
+        voiceServer?.radioPacketListener = { playerUuid, frequency ->
+            val firstPacket = lastRadioTransmission.put(playerUuid, System.nanoTime()) == null
+            if (firstPacket) {
+                activePlayers[playerUuid]?.server?.execute {
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(
+                        com.ruskserver.modernvoicechat.api.event.RadioTransmitEvent(
+                            playerUuid, frequency, true
+                        )
+                    )
+                }
+            }
         }
         voiceServer?.start()
         logger.info("==========================================================")
@@ -106,6 +145,9 @@ object ServerVoiceManager {
         playerTokens.remove(playerUuid)
         activePlayers.remove(playerUuid)
         speakingPlayers.remove(playerUuid)
+        serverMutedPlayers.remove(playerUuid)
+        lastRadioTransmission.remove(playerUuid)
+        lastVoiceTransmission.remove(playerUuid)
         router.removePlayer(playerUuid)
         voiceServer?.unregisterClient(playerUuid)
         logger.info("[ModernVoiceChat] Voice Chat session disconnected for player: ${event.entity.scoreboardName}")
@@ -114,11 +156,28 @@ object ServerVoiceManager {
     @SubscribeEvent
     fun onServerTick(event: ServerTickEvent.Post) {
         val server = event.server ?: return
+        router.maxDistance = ServerConfig.VOICE_RANGE.get()
         for (player in server.playerList.players) {
             router.updatePosition(
                 player.uuid,
                 PlayerPosition(player.x, player.y, player.z, player.level().dimension().location().toString())
             )
+        }
+        val cutoff = System.nanoTime() - java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(300)
+        for ((playerUuid, lastPacket) in lastVoiceTransmission) {
+            if (lastPacket < cutoff && lastVoiceTransmission.remove(playerUuid, lastPacket)) {
+                setPlayerSpeaking(playerUuid, false)
+            }
+        }
+        for ((playerUuid, lastPacket) in lastRadioTransmission) {
+            if (lastPacket < cutoff && lastRadioTransmission.remove(playerUuid, lastPacket)) {
+                val frequency = voiceServer?.radioFrequencyProvider?.invoke(playerUuid) ?: 144.0
+                net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(
+                    com.ruskserver.modernvoicechat.api.event.RadioTransmitEvent(
+                        playerUuid, frequency, false
+                    )
+                )
+            }
         }
     }
 }

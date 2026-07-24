@@ -149,6 +149,16 @@ class AudioRecorder(
         return latest
     }
 
+    fun discardPendingFrames() {
+        pcmQueue.clear()
+    }
+
+    @Synchronized
+    fun restart(): Boolean {
+        stopInternal()
+        return start()
+    }
+
     @Synchronized
     fun stop() {
         stopInternal()
