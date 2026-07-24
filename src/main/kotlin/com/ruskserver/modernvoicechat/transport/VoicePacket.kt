@@ -14,8 +14,7 @@ data class VoicePacket(
     val posY: Double = 0.0,
     val posZ: Double = 0.0,
     val isRadio: Boolean = false,
-    val quality: Float = 1.0f,
-    val sessionToken: UUID = NO_SESSION_TOKEN
+    val quality: Float = 1.0f
 ) {
     fun toBytes(): ByteArray {
         require(opusData.size <= MAX_OPUS_DATA_SIZE) {
@@ -24,8 +23,6 @@ data class VoicePacket(
         val buffer = ByteBuffer.allocate(HEADER_SIZE + opusData.size)
         buffer.putLong(senderUuid.mostSignificantBits)
         buffer.putLong(senderUuid.leastSignificantBits)
-        buffer.putLong(sessionToken.mostSignificantBits)
-        buffer.putLong(sessionToken.leastSignificantBits)
         buffer.putLong(sequenceNumber)
         buffer.putDouble(posX)
         buffer.putDouble(posY)
@@ -39,8 +36,7 @@ data class VoicePacket(
 
     companion object {
         const val MAX_OPUS_DATA_SIZE = 4000
-        const val HEADER_SIZE = 16 + 16 + 8 + 24 + 1 + 4 + 4
-        val NO_SESSION_TOKEN: UUID = UUID(0L, 0L)
+        const val HEADER_SIZE = 16 + 8 + 24 + 1 + 4 + 4
 
         fun fromBytes(bytes: ByteArray): VoicePacket {
             require(bytes.size >= HEADER_SIZE) {
@@ -49,8 +45,6 @@ data class VoicePacket(
             val buffer = ByteBuffer.wrap(bytes)
             val most = buffer.long
             val least = buffer.long
-            val tokenMost = buffer.long
-            val tokenLeast = buffer.long
             val seq = buffer.long
             val x = buffer.double
             val y = buffer.double
@@ -66,10 +60,7 @@ data class VoicePacket(
             }
             val opus = ByteArray(len)
             buffer.get(opus)
-            return VoicePacket(
-                UUID(most, least), seq, opus, x, y, z, isRadio, quality,
-                UUID(tokenMost, tokenLeast)
-            )
+            return VoicePacket(UUID(most, least), seq, opus, x, y, z, isRadio, quality)
         }
     }
 

@@ -4,10 +4,17 @@ import org.slf4j.LoggerFactory
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileWriter
+import java.io.FileInputStream
+import java.nio.file.Path
 import java.security.KeyPair
 import java.security.KeyPairGenerator
+import java.security.KeyFactory
+import java.security.KeyStore
 import java.security.SecureRandom
 import java.security.Signature
+import java.security.cert.CertificateFactory
+import java.security.spec.PKCS8EncodedKeySpec
+import java.security.MessageDigest
 import java.util.Base64
 
 /**
@@ -20,15 +27,18 @@ object SelfSignedCertUtils {
 
     data class CertKeyPair(val keyFile: File, val certFile: File)
 
-    fun generateSelfSignedCert(): CertKeyPair {
-        val tempDir = File(System.getProperty("java.io.tmpdir"), "modernvoicechat_certs")
-        tempDir.mkdirs()
+    fun loadOrCreate(directory: Path): CertKeyPair {
+        val certDir = directory.toFile()
+        check(certDir.exists() || certDir.mkdirs()) {
+            "Could not create certificate directory: ${certDir.absolutePath}"
+        }
 
-        val keyFile = File(tempDir, "key.pem")
-        val certFile = File(tempDir, "cert.pem")
+        val keyFile = File(certDir, "key.pem")
+        val certFile = File(certDir, "cert.pem")
 
-        keyFile.delete()
-        certFile.delete()
+        if (keyFile.isFile && certFile.isFile) {
+            return CertKeyPair(keyFile, certFile)
+        }
 
         try {
             val keyGen = KeyPairGenerator.getInstance("RSA")
@@ -50,13 +60,49 @@ object SelfSignedCertUtils {
 
             FileWriter(keyFile).use { it.write(privateKeyPem) }
             FileWriter(certFile).use { it.write(certPem) }
+            keyFile.setReadable(false, false)
+            keyFile.setWritable(false, false)
+            keyFile.setReadable(true, true)
+            keyFile.setWritable(true, true)
 
-            logger.info("Successfully created standalone X.509 PEM certificate for QUIC Server at ${tempDir.absolutePath}")
+            logger.info("Created persistent X.509 certificate for QUIC server at ${certDir.absolutePath}")
             return CertKeyPair(keyFile, certFile)
         } catch (e: Exception) {
             logger.error("Failed to generate standalone self-signed certificate", e)
             throw e
         }
+    }
+
+    @Deprecated("Use loadOrCreate with a persistent directory")
+    fun generateSelfSignedCert(): CertKeyPair =
+        loadOrCreate(Path.of(System.getProperty("java.io.tmpdir"), "modernvoicechat_certs"))
+
+    fun loadKeyStore(pair: CertKeyPair, password: CharArray): KeyStore {
+        val keyBytes = decodePem(pair.keyFile, "PRIVATE KEY")
+        val privateKey = KeyFactory.getInstance("RSA")
+            .generatePrivate(PKCS8EncodedKeySpec(keyBytes))
+        val certificate = FileInputStream(pair.certFile).use {
+            CertificateFactory.getInstance("X.509").generateCertificate(it)
+        }
+        return KeyStore.getInstance("PKCS12").apply {
+            load(null, password)
+            setKeyEntry("modernvoicechat", privateKey, password, arrayOf(certificate))
+        }
+    }
+
+    fun certificateFingerprint(pair: CertKeyPair): ByteArray {
+        val certificate = FileInputStream(pair.certFile).use {
+            CertificateFactory.getInstance("X.509").generateCertificate(it)
+        }
+        return MessageDigest.getInstance("SHA-256").digest(certificate.encoded)
+    }
+
+    private fun decodePem(file: File, type: String): ByteArray {
+        val content = file.readText()
+            .replace("-----BEGIN $type-----", "")
+            .replace("-----END $type-----", "")
+            .replace("\\s".toRegex(), "")
+        return Base64.getDecoder().decode(content)
     }
 
     private fun generateSelfSignedCertBytes(keyPair: KeyPair): ByteArray {

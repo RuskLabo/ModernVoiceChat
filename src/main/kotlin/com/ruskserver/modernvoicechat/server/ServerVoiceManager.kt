@@ -80,7 +80,15 @@ object ServerVoiceManager {
 
         val port = ServerConfig.VOICE_PORT.get()
         val host = ServerConfig.VOICE_HOST.get()
-        PacketDistributor.sendToPlayer(player, ModNetwork.S2CVoiceSecretPayload(secretToken, port, host))
+        val fingerprint = voiceServer?.certificateFingerprint
+        if (fingerprint == null) {
+            logger.error("Cannot initialize voice chat for ${player.scoreboardName}: QUIC server is unavailable")
+            return
+        }
+        PacketDistributor.sendToPlayer(
+            player,
+            ModNetwork.S2CVoiceSecretPayload(secretToken, port, host, fingerprint)
+        )
         logger.info("[ModernVoiceChat] Initialized Voice Chat handshake token for player: ${player.scoreboardName} ($playerUuid)")
     }
 

@@ -46,7 +46,12 @@ object ClientVoiceManager {
     @Volatile private var loopbackRunning = false
     private var loopbackSourceLine: SourceDataLine? = null
 
-    fun connect(voicePort: Int, voiceHost: String = "", secretToken: UUID) {
+    fun connect(
+        voicePort: Int,
+        voiceHost: String = "",
+        secretToken: UUID,
+        certificateFingerprint: ByteArray
+    ) {
         val mc = Minecraft.getInstance()
         val localPlayer = mc.player ?: return
         val serverData = mc.currentServer
@@ -72,7 +77,13 @@ object ClientVoiceManager {
         decoder = OpusDecoderWrapper(48000, 1)
         adaptor = DynamicBitrateAdaptor(encoder!!)
 
-        voiceClient = QuicVoiceClient(localPlayer.uuid, serverAddress, adaptor, secretToken)
+        voiceClient = QuicVoiceClient(
+            localPlayer.uuid,
+            serverAddress,
+            adaptor,
+            secretToken,
+            certificateFingerprint
+        )
         recorder = AudioRecorder(48000, 960)
         player = AudioPlayer(48000)
 
@@ -80,13 +91,16 @@ object ClientVoiceManager {
             handleIncomingPacket(packet)
         }
 
+        if (voiceClient?.start() != true) {
+            logger.error("Could not connect to authenticated QUIC voice server")
+            disconnect()
+            return
+        }
         recorder?.start()
-        voiceClient?.start()
         isConnected = true
         logger.info("ClientVoiceManager connected to voice server (resolved: ${resolvedAddress.hostAddress}:${serverAddress.port})")
 
         PacketDistributor.sendToServer(ModNetwork.C2SVoiceSecretPayload(secretToken))
-        voiceClient?.sendHandshake(localPlayer.x, localPlayer.y, localPlayer.z)
     }
 
     private fun handleIncomingPacket(packet: VoicePacket) {
@@ -257,10 +271,6 @@ object ClientVoiceManager {
 
         if (VoiceConfig.isMicMuted) {
             VoiceHudOverlay.isSpeakingCurrent = false
-            // ミュート中であっても 10 ticks (0.5秒) ごとに UDP キープアライブを送信して登録を維持
-            if (mc.level != null && mc.level!!.gameTime % 10L == 0L) {
-                sendKeepAlivePacket(localPlayer)
-            }
             return
         }
 
@@ -310,24 +320,7 @@ object ClientVoiceManager {
             }
         }
 
-        // 発話がない場合も 10 ticks (0.5秒) ごとに UDP キープアライブを送信してサーバーに受信先 IP:Port を常時登録
-        if (!anySpeaking && mc.level != null && mc.level!!.gameTime % 10L == 0L) {
-            sendKeepAlivePacket(localPlayer)
-        }
-
         VoiceHudOverlay.isSpeakingCurrent = anySpeaking
-    }
-
-    private fun sendKeepAlivePacket(player: net.minecraft.world.entity.player.Player) {
-        val keepAlivePacket = VoicePacket(
-            senderUuid = player.uuid,
-            sequenceNumber = System.currentTimeMillis(),
-            opusData = ByteArray(0), // 空の Opus データ = キープアライブパケット
-            posX = player.x,
-            posY = player.y,
-            posZ = player.z
-        )
-        voiceClient?.sendHandler?.invoke(keepAlivePacket)
     }
 
     @SubscribeEvent

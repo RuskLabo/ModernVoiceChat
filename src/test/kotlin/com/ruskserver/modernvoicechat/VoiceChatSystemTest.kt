@@ -89,16 +89,26 @@ class VoiceChatSystemTest {
 
         val playerA = UUID.randomUUID()
         val playerB = UUID.randomUUID()
+        val tokenA = UUID.randomUUID()
+        val tokenB = UUID.randomUUID()
+        val validTokens = mapOf(playerA to tokenA, playerB to tokenB)
+        server.packetAuthenticator = { uuid, token -> validTokens[uuid] == token }
 
         router.updatePosition(playerA, PlayerPosition(0.0, 64.0, 0.0, "minecraft:overworld"))
         router.updatePosition(playerB, PlayerPosition(5.0, 64.0, 0.0, "minecraft:overworld"))
 
         val serverAddress = InetSocketAddress("127.0.0.1", testPort)
-        val clientA = QuicVoiceClient(playerA, serverAddress)
-        val clientB = QuicVoiceClient(playerB, serverAddress)
+        val clientA = QuicVoiceClient(
+            playerA, serverAddress, sessionToken = tokenA,
+            expectedCertificateFingerprint = server.certificateFingerprint
+        )
+        val clientB = QuicVoiceClient(
+            playerB, serverAddress, sessionToken = tokenB,
+            expectedCertificateFingerprint = server.certificateFingerprint
+        )
 
-        clientA.start()
-        clientB.start()
+        assertTrue(clientA.start())
+        assertTrue(clientB.start())
 
         val latch = CountDownLatch(1)
         var receivedPacket: VoicePacket? = null
@@ -107,12 +117,6 @@ class VoiceChatSystemTest {
             if (packet.senderUuid == playerA) {
                 receivedPacket = packet
                 latch.countDown()
-            }
-        }
-
-        server.packetRouterHandler = { packet, addr ->
-            if (packet.senderUuid == playerA) {
-                clientB.handlePacketDirectly(packet)
             }
         }
 
@@ -128,7 +132,7 @@ class VoiceChatSystemTest {
             opusData = dummyData
         )
 
-        server.routeIncomingPacket(testPacket, InetSocketAddress("127.0.0.1", 50001))
+        clientA.sendHandler?.invoke(testPacket)
 
         val received = latch.await(2, TimeUnit.SECONDS)
 

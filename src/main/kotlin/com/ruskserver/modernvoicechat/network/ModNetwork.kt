@@ -15,7 +15,12 @@ object ModNetwork {
     val S2C_SECRET_TYPE = CustomPacketPayload.Type<S2CVoiceSecretPayload>(ResourceLocation.fromNamespaceAndPath(Modernvoicechat.ID, "s2c_secret"))
     val C2S_SECRET_TYPE = CustomPacketPayload.Type<C2SVoiceSecretPayload>(ResourceLocation.fromNamespaceAndPath(Modernvoicechat.ID, "c2s_secret"))
 
-    data class S2CVoiceSecretPayload(val secretToken: UUID, val voicePort: Int, val voiceHost: String) : CustomPacketPayload {
+    data class S2CVoiceSecretPayload(
+        val secretToken: UUID,
+        val voicePort: Int,
+        val voiceHost: String,
+        val certificateFingerprint: ByteArray
+    ) : CustomPacketPayload {
         override fun type(): CustomPacketPayload.Type<out CustomPacketPayload> = S2C_SECRET_TYPE
 
         companion object {
@@ -24,9 +29,15 @@ object ModNetwork {
                     buf.writeUUID(valObj.secretToken)
                     buf.writeInt(valObj.voicePort)
                     buf.writeUtf(valObj.voiceHost)
+                    buf.writeByteArray(valObj.certificateFingerprint)
                 },
                 { buf ->
-                    S2CVoiceSecretPayload(buf.readUUID(), buf.readInt(), buf.readUtf())
+                    S2CVoiceSecretPayload(
+                        buf.readUUID(),
+                        buf.readInt(),
+                        buf.readUtf(),
+                        buf.readByteArray(32)
+                    )
                 }
             )
         }
@@ -48,7 +59,8 @@ object ModNetwork {
     }
 
     fun register(event: RegisterPayloadHandlersEvent) {
-        val registrar: PayloadRegistrar = event.registrar("1")
+        // Version 2 adds the pinned QUIC certificate fingerprint to the handshake.
+        val registrar: PayloadRegistrar = event.registrar("2")
 
         // サーバー -> クライアント ハンドシェイク
         registrar.playToClient(
@@ -57,7 +69,12 @@ object ModNetwork {
         ) { payload, context ->
             context.enqueueWork {
                 Modernvoicechat.LOGGER.info("Received voice server connection details. Port: ${payload.voicePort}, Host: ${payload.voiceHost}")
-                ClientVoiceManager.connect(payload.voicePort, payload.voiceHost, payload.secretToken)
+                ClientVoiceManager.connect(
+                    payload.voicePort,
+                    payload.voiceHost,
+                    payload.secretToken,
+                    payload.certificateFingerprint
+                )
             }
         }
 
