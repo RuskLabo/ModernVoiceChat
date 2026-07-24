@@ -1,5 +1,62 @@
 # 📋 ModernVoiceChat Changelog
 
+## 🚀 Version 1.4
+
+**Release Date**: July 24, 2026
+**Target Environment**: Minecraft 1.21.1 / NeoForge 21.1.238 / Java 21
+
+---
+
+### Secure QUIC Transport
+
+- Replaced the legacy raw UDP transport with real `kwik` QUIC/TLS 1.3 connections.
+- Added RFC 9221 QUIC Datagram transport for low-latency, non-blocking Opus audio frames.
+- Added an authenticated QUIC control stream using the Minecraft login session token.
+- Added persistent server certificates and SHA-256 certificate pinning through the authenticated Minecraft channel.
+- Added bounded authentication workers, five-second authentication deadlines, per-session rate limits, and a global SFU egress limit.
+- Added duplicate, stale, malformed, and oversized packet rejection.
+
+### Radio System
+
+- Implemented server-authoritative radio routing up to 1,000 metres.
+- Radio traffic now requires the sender to be actively using a radio.
+- Receivers must possess a radio tuned to the same frequency.
+- Added server-calculated signal quality degradation between 700 and 1,000 metres.
+- Synchronized frequency changes to the server and moved frequency storage from the item name to custom item data.
+- Connected `RadioTransmitEvent` to actual transmission start and stop states.
+
+### Audio Reliability and Quality
+
+- Added one stateful Opus decoder per remote speaker to prevent cross-speaker decoder contamination.
+- Added packet-loss concealment for short sequence gaps and rejected duplicate or excessively late frames.
+- Moved capture transmission to a dedicated 20 ms audio loop instead of batching frames on game ticks.
+- Connected kwik RTT and packet-loss statistics to dynamic Opus payload and loss settings.
+- Closed native Opus encoder and decoder resources during disconnects and reconnects.
+- Added a soft output limiter to reduce clipping during simultaneous speech.
+- Added five-second output-device retry backoff to prevent exception-log floods.
+
+### Configuration, API, and Lifecycle Fixes
+
+- Persisted microphone and speaker mute states.
+- Discarded queued microphone audio while muted to prevent delayed transmission after unmuting.
+- Connected server mute and speaking-state APIs to the live packet path.
+- Fixed direct-call isolation state when links are removed or players disconnect.
+- Applied voice-range configuration changes without requiring a server restart.
+- Reinitialized microphone, speaker, and loopback lines after device changes.
+- Fixed IPv6 server address parsing and removed unsafe localhost fallback after DNS failures.
+- Added certificate validation and automatic rotation before expiry.
+
+### Packaging and Compatibility
+
+- Declared Cloth Config API as a required client dependency.
+- Corrected documentation about Opus4J native codec binaries.
+- Restricted supported runtime versions to Minecraft 1.21.1 and NeoForge 21.1.x.
+- Aligned Parchment mappings with Minecraft 1.21.1 (`2024.11.17`).
+- Marked the Unix Gradle wrapper executable.
+- Updated the NeoForge payload protocol to version 2.
+
+---
+
 ## 🚀 Version 1.3
 
 **Release Date**: July 23, 2026  
