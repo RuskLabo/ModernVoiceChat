@@ -5,9 +5,9 @@ import java.io.DataOutputStream
 import java.util.UUID
 
 object VoiceControlProtocol {
-    const val ALPN = "modernvoicechat/1"
+    const val ALPN = "modernvoicechat/2"
     const val MAGIC = 0x4D564331 // MVC1
-    const val VERSION = 1
+    const val VERSION = 2
     const val AUTH_ACCEPTED = 0
     const val AUTH_REJECTED = 1
 

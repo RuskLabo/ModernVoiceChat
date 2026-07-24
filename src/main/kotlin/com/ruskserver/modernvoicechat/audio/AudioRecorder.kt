@@ -5,11 +5,18 @@ import org.slf4j.LoggerFactory
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.DataLine
 import javax.sound.sampled.TargetDataLine
+
+data class CapturedAudioFrame(
+    val pcm: ShortArray,
+    val voiceDetected: Boolean,
+    val capturedAtNanos: Long = System.nanoTime()
+)
 
 /**
  * 型安全な ByteBuffer Little-Endian エンディアンパースと
@@ -32,7 +39,20 @@ class AudioRecorder(
     // 1フレームあたりの期待バイト数 (16bit = 2 bytes/sample)
     val frameSizeBytes: Int = frameSizeSamples * 2
 
-    private val pcmQueue = ArrayBlockingQueue<Pair<ShortArray, Boolean>>(5)
+    private val pcmQueue = ArrayBlockingQueue<CapturedAudioFrame>(5)
+    private val subscribers = ConcurrentHashMap.newKeySet<FrameSubscription>()
+
+    class FrameSubscription internal constructor(
+        private val owner: AudioRecorder,
+        internal val queue: ArrayBlockingQueue<CapturedAudioFrame>
+    ) : AutoCloseable {
+        fun readFrame(timeoutMs: Long = 0): CapturedAudioFrame? =
+            if (timeoutMs > 0) queue.poll(timeoutMs, TimeUnit.MILLISECONDS) else queue.poll()
+
+        override fun close() {
+            owner.unsubscribe(this)
+        }
+    }
 
     @Synchronized
     fun start(): Boolean {
@@ -114,11 +134,7 @@ class AudioRecorder(
                 val threshold = (VoiceConfig.vadThresholdPercentage / 1000.0)
                 val isSpeaking = rms >= threshold
 
-                val element = Pair(pcm, isSpeaking)
-
-                while (!pcmQueue.offer(element)) {
-                    pcmQueue.poll()
-                }
+                publishFrame(CapturedAudioFrame(pcm, isSpeaking))
 
             } catch (e: Exception) {
                 if (!recording) break
@@ -132,7 +148,7 @@ class AudioRecorder(
      * drainToLatest=true の場合、キューに複数フレームが溜まっていても最新だけを返す。
      * ループバックで使うと古いフレームをスキップして遅延を防げる。
      */
-    fun readFrame(timeoutMs: Long = 0, drainToLatest: Boolean = false): Pair<ShortArray, Boolean>? {
+    fun readFrame(timeoutMs: Long = 0, drainToLatest: Boolean = false): CapturedAudioFrame? {
         val first = if (timeoutMs > 0) {
             pcmQueue.poll(timeoutMs, TimeUnit.MILLISECONDS)
         } else {
@@ -149,8 +165,37 @@ class AudioRecorder(
         return latest
     }
 
+    fun subscribe(capacity: Int = 5): FrameSubscription {
+        val subscription = FrameSubscription(this, ArrayBlockingQueue(capacity.coerceAtLeast(1)))
+        subscribers.add(subscription)
+        return subscription
+    }
+
+    private fun unsubscribe(subscription: FrameSubscription) {
+        subscribers.remove(subscription)
+        subscription.queue.clear()
+    }
+
+    internal fun publishFrame(frame: CapturedAudioFrame) {
+        offerLatest(pcmQueue, frame)
+        subscribers.forEach { subscription ->
+            offerLatest(
+                subscription.queue,
+                frame.copy(pcm = frame.pcm.copyOf())
+            )
+        }
+    }
+
+    private fun offerLatest(
+        queue: ArrayBlockingQueue<CapturedAudioFrame>,
+        frame: CapturedAudioFrame
+    ) {
+        while (!queue.offer(frame)) queue.poll()
+    }
+
     fun discardPendingFrames() {
         pcmQueue.clear()
+        subscribers.forEach { it.queue.clear() }
     }
 
     @Synchronized

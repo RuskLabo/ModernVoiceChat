@@ -35,7 +35,8 @@ class AudioPlayer(
         val posY: Double,
         val posZ: Double,
         val isRadio: Boolean,
-        val quality: Float
+        val quality: Float,
+        val bypassDistanceAttenuation: Boolean
     )
 
     private val activeBuffers = ConcurrentHashMap<UUID, ConcurrentHashMap<Long, AudioFrame>>()
@@ -101,7 +102,7 @@ class AudioPlayer(
                         var leftGain = baseVol
                         var rightGain = baseVol
 
-                        if (!frame.isRadio) {
+                        if (!frame.isRadio && !frame.bypassDistanceAttenuation) {
                             // 通常空間ボイス: 3D 空間減衰 & ステレオパニング計算
                             val dx = frame.posX - listenerX
                             val dy = frame.posY - listenerY
@@ -171,7 +172,16 @@ class AudioPlayer(
         }
     }
 
-    fun playAudio(playerUuid: UUID, pcm: ShortArray, posX: Double, posY: Double, posZ: Double, isRadio: Boolean = false, quality: Float = 1.0f) {
+    fun playAudio(
+        playerUuid: UUID,
+        pcm: ShortArray,
+        posX: Double,
+        posY: Double,
+        posZ: Double,
+        isRadio: Boolean = false,
+        quality: Float = 1.0f,
+        bypassDistanceAttenuation: Boolean = false
+    ) {
         if (VoiceConfig.isSpeakerMuted) return
 
         val processedPcm = if (isRadio) {
@@ -188,7 +198,9 @@ class AudioPlayer(
         if (playerFrames.size > 5) {
             playerFrames.clear()
         }
-        playerFrames[System.nanoTime()] = AudioFrame(processedPcm, posX, posY, posZ, isRadio, quality)
+        playerFrames[System.nanoTime()] = AudioFrame(
+            processedPcm, posX, posY, posZ, isRadio, quality, bypassDistanceAttenuation
+        )
     }
 
     fun playAudioDirect(playerUuid: UUID, pcm: ShortArray) {

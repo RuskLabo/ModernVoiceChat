@@ -71,8 +71,8 @@ object ModNetwork {
     }
 
     fun register(event: RegisterPayloadHandlersEvent) {
-        // Version 2 adds the pinned QUIC certificate fingerprint to the handshake.
-        val registrar: PayloadRegistrar = event.registrar("2")
+        // Version 3 requires the session-epoch and route-aware QUIC voice format.
+        val registrar: PayloadRegistrar = event.registrar("3")
 
         // サーバー -> クライアント ハンドシェイク
         registrar.playToClient(

@@ -13,8 +13,12 @@
 - Added RFC 9221 QUIC Datagram transport for low-latency, non-blocking Opus audio frames.
 - Added an authenticated QUIC control stream using the Minecraft login session token.
 - Added persistent server certificates and SHA-256 certificate pinning through the authenticated Minecraft channel.
-- Added bounded authentication workers, five-second authentication deadlines, per-session rate limits, and a global SFU egress limit.
+- Added bounded authentication workers, five-second authentication deadlines, and per-session rate limits.
 - Added duplicate, stale, malformed, and oversized packet rejection.
+- Corrected Kwik keepalive lifetime handling and added automatic QUIC reconnection.
+- Added bounded QUIC Datagram callback executors and deterministic executor cleanup.
+- Added session epochs and atomic session replacement to prevent stale-stream packet rejection.
+- Replaced the shared SFU bandwidth window with fair sender/recipient rate limits.
 
 ### Radio System
 
@@ -24,12 +28,17 @@
 - Added server-calculated signal quality degradation between 700 and 1,000 metres.
 - Synchronized frequency changes to the server and moved frequency storage from the item name to custom item data.
 - Connected `RadioTransmitEvent` to actual transmission start and stop states.
+- Validated legacy radio frequencies against NaN, infinity, and the supported range.
+- Moved radio inventory and active-transmitter reads onto immutable server-tick snapshots.
+- Added correct multi-radio receive matching and active-radio transmit frequency selection.
 
 ### Audio Reliability and Quality
 
 - Added one stateful Opus decoder per remote speaker to prevent cross-speaker decoder contamination.
 - Added packet-loss concealment for short sequence gaps and rejected duplicate or excessively late frames.
+- Added a 60 ms per-speaker jitter buffer for QUIC Datagram reordering.
 - Moved capture transmission to a dedicated 20 ms audio loop instead of batching frames on game ticks.
+- Added capture-time input-state selection and independent recorder subscriptions for microphone tests.
 - Connected kwik RTT and packet-loss statistics to dynamic Opus payload and loss settings.
 - Closed native Opus encoder and decoder resources during disconnects and reconnects.
 - Added a soft output limiter to reduce clipping during simultaneous speech.
@@ -41,6 +50,8 @@
 - Discarded queued microphone audio while muted to prevent delayed transmission after unmuting.
 - Connected server mute and speaking-state APIs to the live packet path.
 - Fixed direct-call isolation state when links are removed or players disconnect.
+- Added server-controlled direct/group routing so long-distance calls bypass proximity attenuation.
+- Made proximity isolation bidirectional and atomically updated.
 - Applied voice-range configuration changes without requiring a server restart.
 - Reinitialized microphone, speaker, and loopback lines after device changes.
 - Fixed IPv6 server address parsing and removed unsafe localhost fallback after DNS failures.

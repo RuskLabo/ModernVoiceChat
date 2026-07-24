@@ -45,18 +45,19 @@ class RadioItem(properties: Properties) : Item(properties) {
             val stored = stack.getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY)
                 .copyTag()
                 .getDouble("modernvoicechat_frequency")
-            if (stored in 30.0..3000.0) return stored
+            if (stored.isFinite() && stored in 30.0..3000.0) return stored
             val customName = stack.get(DataComponents.CUSTOM_NAME)
             return try {
                 val text = customName?.string ?: ""
-                if (text.startsWith("Freq:")) text.substring(5).toDouble() else 144.00
+                val legacy = if (text.startsWith("Freq:")) text.substring(5).toDouble() else 144.00
+                if (legacy.isFinite() && legacy in 30.0..3000.0) legacy else 144.00
             } catch (e: Exception) {
                 144.00
             }
         }
 
         fun setFrequency(stack: ItemStack, frequency: Double) {
-            val value = frequency.coerceIn(30.0, 3000.0)
+            val value = if (frequency.isFinite()) frequency.coerceIn(30.0, 3000.0) else 144.00
             CustomData.update(DataComponents.CUSTOM_DATA, stack) {
                 it.putDouble("modernvoicechat_frequency", value)
             }

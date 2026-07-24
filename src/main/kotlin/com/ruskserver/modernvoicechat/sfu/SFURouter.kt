@@ -20,7 +20,7 @@ class SFURouter(
 ) {
     private val playerPositions = ConcurrentHashMap<UUID, PlayerPosition>()
     private val directLinks = ConcurrentHashMap<UUID, MutableSet<UUID>>()
-    private val isolatedPlayers = ConcurrentHashMap.newKeySet<UUID>()
+    @Volatile private var isolatedPlayers: Set<UUID> = emptySet()
     private val isolatingLinks = ConcurrentHashMap<UUID, MutableSet<UUID>>()
     private val voiceGroups = ConcurrentHashMap<UUID, MutableSet<UUID>>()
 
@@ -37,7 +37,6 @@ class SFURouter(
         for ((_, links) in directLinks) links.remove(playerUuid)
         for ((_, links) in isolatingLinks) links.remove(playerUuid)
         refreshIsolation()
-        isolatedPlayers.remove(playerUuid)
         for ((_, members) in voiceGroups) {
             members.remove(playerUuid)
         }
@@ -87,40 +86,41 @@ class SFURouter(
     }
 
     fun getRecipientsForSender(senderUuid: UUID): List<UUID> {
+        return (getDirectRecipientsForSender(senderUuid) + getProximityRecipientsForSender(senderUuid))
+            .distinct()
+    }
+
+    fun getDirectRecipientsForSender(senderUuid: UUID): Set<UUID> {
         val recipients = mutableSetOf<UUID>()
 
-        // 1. ダイレクトリンク受給者
         directLinks[senderUuid]?.let { recipients.addAll(it) }
 
-        // 2. ボイスグループ受給者
         for ((_, members) in voiceGroups) {
             if (members.contains(senderUuid)) {
                 recipients.addAll(members.filter { it != senderUuid })
             }
         }
+        return recipients
+    }
 
-        // 3. 通常の空間近接ボイス (隔離されている場合はスキップ)
-        if (!isolatedPlayers.contains(senderUuid)) {
-            val senderPos = playerPositions[senderUuid]
-            if (senderPos != null) {
-                val maxDistanceSq = maxDistance * maxDistance
-                for ((uuid, pos) in playerPositions) {
-                    if (uuid == senderUuid) continue
-                    if (pos.dimension != senderPos.dimension) continue
+    fun getProximityRecipientsForSender(senderUuid: UUID): Set<UUID> {
+        val isolationSnapshot = isolatedPlayers
+        if (senderUuid in isolationSnapshot) return emptySet()
+        val senderPos = playerPositions[senderUuid] ?: return emptySet()
+        val recipients = mutableSetOf<UUID>()
+        val maxDistanceSq = maxDistance * maxDistance
+        for ((uuid, pos) in playerPositions) {
+            if (uuid == senderUuid || uuid in isolationSnapshot) continue
+            if (pos.dimension != senderPos.dimension) continue
 
-                    val dx = pos.x - senderPos.x
-                    val dy = pos.y - senderPos.y
-                    val dz = pos.z - senderPos.z
-                    val distSq = dx * dx + dy * dy + dz * dz
+            val dx = pos.x - senderPos.x
+            val dy = pos.y - senderPos.y
+            val dz = pos.z - senderPos.z
+            val distSq = dx * dx + dy * dy + dz * dz
 
-                    if (distSq <= maxDistanceSq) {
-                        recipients.add(uuid)
-                    }
-                }
-            }
+            if (distSq <= maxDistanceSq) recipients.add(uuid)
         }
-
-        return recipients.toList()
+        return recipients
     }
 
     fun getDistance(senderUuid: UUID, receiverUuid: UUID): Double? {
@@ -148,10 +148,11 @@ class SFURouter(
     }
 
     private fun refreshIsolation() {
-        isolatedPlayers.clear()
+        val refreshed = mutableSetOf<UUID>()
         isolatingLinks.forEach { (uuid, links) ->
-            if (links.isNotEmpty()) isolatedPlayers.add(uuid)
+            if (links.isNotEmpty()) refreshed.add(uuid)
         }
+        isolatedPlayers = refreshed.toSet()
     }
 
     /**

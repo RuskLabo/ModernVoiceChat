@@ -35,6 +35,9 @@ class QuicVoiceServer(
 ) {
     private val logger = LoggerFactory.getLogger(QuicVoiceServer::class.java)
     private val sessions = ConcurrentHashMap<UUID, VoiceSession>()
+    private val sessionLock = Any()
+    private val recipientEgressWindows =
+        ConcurrentHashMap<UUID, ConcurrentHashMap<UUID, RateWindow>>()
     private val controlExecutor: ExecutorService = ThreadPoolExecutor(
         2, 8, 30L, TimeUnit.SECONDS, ArrayBlockingQueue(64),
         { task -> Thread(task, "ModernVoiceChat-QuicControl").apply { isDaemon = true } },
@@ -48,12 +51,12 @@ class QuicVoiceServer(
         SelfSignedCertUtils.certificateFingerprint(certificatePair)
 
     @Volatile private var connector: ServerConnector? = null
-    private var egressWindowStartedNanos = System.nanoTime()
-    private var egressBytesInWindow = 0L
     @Volatile var packetRouterHandler: ((VoicePacket, InetSocketAddress) -> Unit)? = null
     @Volatile var packetAuthenticator: ((UUID, UUID) -> Boolean)? = null
     @Volatile var radioFrequencyProvider: ((UUID) -> Double?)? = null
     @Volatile var radioTransmittingProvider: ((UUID) -> Boolean)? = null
+    @Volatile var radioTransmitFrequencyProvider: ((UUID) -> Double?)? = null
+    @Volatile var radioReceiveFrequenciesProvider: ((UUID) -> Set<Double>)? = null
     @Volatile var radioPacketListener: ((UUID, Double) -> Unit)? = null
     @Volatile var senderAllowedProvider: ((UUID) -> Boolean)? = null
     @Volatile var voicePacketListener: ((UUID) -> Unit)? = null
@@ -63,6 +66,11 @@ class QuicVoiceServer(
         @Volatile var playerUuid: UUID? = null,
         @Volatile var authenticated: Boolean = false,
         @Volatile var authenticationTimeout: ScheduledFuture<*>? = null,
+        val datagramExecutor: ExecutorService = ThreadPoolExecutor(
+            1, 1, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue(128),
+            { task -> Thread(task, "ModernVoiceChat-ServerDatagrams").apply { isDaemon = true } },
+            ThreadPoolExecutor.DiscardPolicy()
+        ),
         var rateWindowStartedNanos: Long = System.nanoTime(),
         var packetsInWindow: Int = 0,
         var bytesInWindow: Int = 0,
@@ -70,7 +78,7 @@ class QuicVoiceServer(
         val recentSequences: LinkedHashSet<Long> = LinkedHashSet()
     ) {
         @Synchronized
-        fun acceptDatagram(sequence: Long, bytes: Int): Boolean {
+        fun acceptEnvelope(bytes: Int): Boolean {
             val now = System.nanoTime()
             if (now - rateWindowStartedNanos >= TimeUnit.SECONDS.toNanos(1)) {
                 rateWindowStartedNanos = now
@@ -79,7 +87,13 @@ class QuicVoiceServer(
             }
             packetsInWindow++
             bytesInWindow += bytes
-            if (packetsInWindow > 100 || bytesInWindow > 512 * 1024) return false
+            val bitrate = try { ServerConfig.MAX_BITRATE_BPS.get() } catch (_: Throwable) { 32_000 }
+            val wireBudget = bitrate / 8 + VoicePacket.HEADER_SIZE * 50
+            return packetsInWindow <= 100 && bytesInWindow <= wireBudget
+        }
+
+        @Synchronized
+        fun acceptSequence(sequence: Long): Boolean {
             if ((highestSequence != Long.MIN_VALUE && sequence < highestSequence - 128) ||
                 !recentSequences.add(sequence)
             ) return false
@@ -90,6 +104,12 @@ class QuicVoiceServer(
             return true
         }
     }
+
+    private data class RateWindow(
+        var startedNanos: Long = System.nanoTime(),
+        var packets: Int = 0,
+        var bytes: Int = 0
+    )
 
     fun start() {
         if (connector != null) return
@@ -146,24 +166,32 @@ class QuicVoiceServer(
                 connection.close(0x104L, "Voice authentication timed out")
             }
         }, 5, TimeUnit.SECONDS)
-        connection.setDatagramHandler { bytes ->
+        connection.setDatagramHandler({ bytes ->
             val playerUuid = session.playerUuid
-            if (!session.authenticated || playerUuid == null) return@setDatagramHandler
+            if (!session.authenticated || playerUuid == null ||
+                sessions[playerUuid] !== session ||
+                !session.acceptEnvelope(bytes.size)
+            ) return@setDatagramHandler
             val packet = try {
                 VoicePacket.fromBytes(bytes).copy(senderUuid = playerUuid)
             } catch (e: IllegalArgumentException) {
-                logger.warn("Rejected malformed QUIC datagram from $playerUuid: ${e.message}")
+                logger.debug("Rejected malformed QUIC datagram from $playerUuid: ${e.message}")
                 return@setDatagramHandler
             }
-            if (!session.acceptDatagram(packet.sequenceNumber, bytes.size)) {
+            if (!session.acceptSequence(packet.sequenceNumber)) {
                 return@setDatagramHandler
             }
             routeAuthenticatedPacket(packet, connectionAddress(connection))
-        }
+        }, session.datagramExecutor)
         connection.setConnectionListener(object : ConnectionListener {
             override fun disconnected(event: ConnectionTerminatedEvent) {
                 session.authenticationTimeout?.cancel(false)
                 removeSession(session)
+                session.datagramExecutor.shutdownNow()
+                logger.info(
+                    "Voice QUIC session closed for ${session.playerUuid ?: "unauthenticated client"}: " +
+                        "${event.errorDescription() ?: event.closeReason()}"
+                )
             }
         })
 
@@ -182,7 +210,18 @@ class QuicVoiceServer(
     private fun authenticateStream(session: VoiceSession, stream: QuicStream) {
         try {
             val hello = VoiceControlProtocol.readClientHello(DataInputStream(stream.inputStream))
-            val accepted = packetAuthenticator?.invoke(hello.playerUuid, hello.sessionToken) ?: true
+            var replacedSession: VoiceSession? = null
+            val accepted = synchronized(sessionLock) {
+                val valid = !session.authenticated &&
+                    (packetAuthenticator?.invoke(hello.playerUuid, hello.sessionToken) ?: true)
+                if (valid) {
+                    session.playerUuid = hello.playerUuid
+                    session.authenticated = true
+                    session.authenticationTimeout?.cancel(false)
+                    replacedSession = sessions.put(hello.playerUuid, session)
+                }
+                valid
+            }
             val output = DataOutputStream(stream.outputStream)
             output.writeInt(
                 if (accepted) VoiceControlProtocol.AUTH_ACCEPTED
@@ -191,15 +230,12 @@ class QuicVoiceServer(
             output.flush()
             stream.outputStream.close()
 
-            if (!accepted || session.authenticated) {
+            if (!accepted) {
                 if (!accepted) session.connection.close(0x101L, "Voice authentication rejected")
                 return
             }
 
-            session.playerUuid = hello.playerUuid
-            session.authenticated = true
-            session.authenticationTimeout?.cancel(false)
-            sessions.put(hello.playerUuid, session)?.let { old ->
+            replacedSession?.let { old ->
                 if (old !== session) old.connection.close(0x102L, "Replaced by a newer voice connection")
             }
             logger.info("Authenticated QUIC voice session for ${hello.playerUuid}")
@@ -231,19 +267,42 @@ class QuicVoiceServer(
             routeRadioPacket(senderUuid, forwardedPacket)
             return
         }
-        forwardToRecipients(forwardedPacket, router.getRecipientsForSender(senderUuid))
+        val directRecipients = router.getDirectRecipientsForSender(senderUuid)
+        if (directRecipients.isNotEmpty()) {
+            forwardToRecipients(
+                forwardedPacket.copy(routeType = VoiceRouteType.DIRECT),
+                directRecipients
+            )
+        }
+        val proximityRecipients = router.getProximityRecipientsForSender(senderUuid) - directRecipients
+        forwardToRecipients(
+            forwardedPacket.copy(routeType = VoiceRouteType.PROXIMITY),
+            proximityRecipients
+        )
     }
 
     private fun routeRadioPacket(senderUuid: UUID, packet: VoicePacket) {
-        if (radioTransmittingProvider?.invoke(senderUuid) != true) return
-        val senderFrequency = radioFrequencyProvider?.invoke(senderUuid) ?: return
+        val senderFrequency = (
+            radioTransmitFrequencyProvider?.invoke(senderUuid)
+                ?: if (radioTransmittingProvider?.invoke(senderUuid) == true) {
+                    radioFrequencyProvider?.invoke(senderUuid)
+                } else null
+            ) ?: return
+        if (!senderFrequency.isFinite()) return
         radioPacketListener?.invoke(senderUuid, senderFrequency)
         val maxRange = try { ServerConfig.RADIO_MAX_RANGE.get() } catch (_: Throwable) { 1000.0 }
         for ((recipientUuid, distance) in router.getPlayersWithinDistance(senderUuid, maxRange)) {
-            val recipientFrequency = radioFrequencyProvider?.invoke(recipientUuid) ?: continue
-            if (kotlin.math.abs(recipientFrequency - senderFrequency) > 0.005) continue
+            val recipientFrequencies = radioReceiveFrequenciesProvider?.invoke(recipientUuid)
+                ?: radioFrequencyProvider?.invoke(recipientUuid)?.let(::setOf)
+                ?: emptySet()
+            if (recipientFrequencies.none {
+                    it.isFinite() && kotlin.math.abs(it - senderFrequency) <= 0.005
+                }) continue
             val quality = router.calculateRadioQuality(distance)
-            forwardToRecipients(packet.copy(quality = quality), listOf(recipientUuid))
+            forwardToRecipients(
+                packet.copy(quality = quality, routeType = VoiceRouteType.RADIO),
+                listOf(recipientUuid)
+            )
         }
     }
 
@@ -252,7 +311,9 @@ class QuicVoiceServer(
         for (recipientUuid in recipients) {
             val recipient = sessions[recipientUuid] ?: continue
             try {
-                if (recipient.connection.canSendDatagram() && allowEgress(rawBytes.size)) {
+                if (recipient.connection.canSendDatagram() &&
+                    allowEgress(packet.senderUuid, recipientUuid, rawBytes.size)
+                ) {
                     recipient.connection.sendDatagram(rawBytes)
                 }
             } catch (e: Exception) {
@@ -262,17 +323,25 @@ class QuicVoiceServer(
     }
 
     @Synchronized
-    private fun allowEgress(bytes: Int): Boolean {
+    private fun allowEgress(senderUuid: UUID, recipientUuid: UUID, bytes: Int): Boolean {
         val now = System.nanoTime()
-        if (now - egressWindowStartedNanos >= TimeUnit.SECONDS.toNanos(1)) {
-            egressWindowStartedNanos = now
-            egressBytesInWindow = 0
+        val senderWindows = recipientEgressWindows.computeIfAbsent(recipientUuid) {
+            ConcurrentHashMap()
         }
-        val perClientBitrate = try { ServerConfig.MAX_BITRATE_BPS.get() } catch (_: Throwable) { 64_000 }
-        val limit = (perClientBitrate.toLong() / 8L) * sessions.size.coerceAtLeast(1)
-        if (egressBytesInWindow + bytes > limit) return false
-        egressBytesInWindow += bytes
-        return true
+        val window = senderWindows.computeIfAbsent(senderUuid) { RateWindow() }
+        synchronized(window) {
+            if (now - window.startedNanos >= TimeUnit.SECONDS.toNanos(1)) {
+                window.startedNanos = now
+                window.packets = 0
+                window.bytes = 0
+            }
+            val bitrate = try { ServerConfig.MAX_BITRATE_BPS.get() } catch (_: Throwable) { 32_000 }
+            val wireBudget = bitrate / 8 + VoicePacket.HEADER_SIZE * 50
+            if (window.packets + 1 > 100 || window.bytes + bytes > wireBudget) return false
+            window.packets++
+            window.bytes += bytes
+            return true
+        }
     }
 
     /**
@@ -285,12 +354,16 @@ class QuicVoiceServer(
     fun registerClient(uuid: UUID, address: InetSocketAddress) = Unit
 
     fun unregisterClient(uuid: UUID) {
-        sessions.remove(uuid)?.connection?.close(0x100L, "Player logged out")
+        val removed = synchronized(sessionLock) { sessions.remove(uuid) }
+        recipientEgressWindows.remove(uuid)
+        recipientEgressWindows.values.forEach { it.remove(uuid) }
+        removed?.connection?.close(0x100L, "Player logged out")
     }
 
     fun stop() {
         connector?.close()
         connector = null
+        sessions.values.forEach { it.datagramExecutor.shutdownNow() }
         sessions.clear()
         controlExecutor.shutdownNow()
         timeoutExecutor.shutdownNow()
@@ -299,7 +372,10 @@ class QuicVoiceServer(
 
     private fun removeSession(session: VoiceSession) {
         val uuid = session.playerUuid ?: return
-        sessions.remove(uuid, session)
+        synchronized(sessionLock) {
+            sessions.remove(uuid, session)
+        }
+        session.datagramExecutor.shutdownNow()
     }
 
     private fun connectionAddress(connection: QuicConnection): InetSocketAddress =

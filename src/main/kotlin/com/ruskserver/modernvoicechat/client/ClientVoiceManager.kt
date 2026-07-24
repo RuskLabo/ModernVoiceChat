@@ -5,6 +5,7 @@ import com.ruskserver.modernvoicechat.audio.AudioPlayer
 import com.ruskserver.modernvoicechat.audio.AudioRecorder
 import com.ruskserver.modernvoicechat.audio.OpusDecoderWrapper
 import com.ruskserver.modernvoicechat.audio.OpusEncoderWrapper
+import com.ruskserver.modernvoicechat.audio.VoiceJitterBuffer
 import com.ruskserver.modernvoicechat.audio.adaptation.DynamicBitrateAdaptor
 import com.ruskserver.modernvoicechat.client.config.VoiceConfig
 import com.ruskserver.modernvoicechat.client.gui.NameTagIcons
@@ -24,7 +25,9 @@ import java.nio.ByteOrder
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.Executors
+import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.DataLine
@@ -35,10 +38,18 @@ object ClientVoiceManager {
     private val connectionExecutor = Executors.newSingleThreadExecutor { task ->
         Thread(task, "ModernVoiceChat-Connection").apply { isDaemon = true }
     }
+    private val jitterExecutor = Executors.newSingleThreadScheduledExecutor { task ->
+        Thread(task, "ModernVoiceChat-JitterBuffer").apply { isDaemon = true }
+    }
     private val connectionGeneration = AtomicLong()
+    private val connectionAttempt = AtomicLong()
+    private val reconnectScheduled = AtomicBoolean()
     @Volatile private var transmitThread: Thread? = null
     @Volatile private var transmitRunning = false
     @Volatile private var transmitState = TransmitState()
+    private val transmitStateHistory = ConcurrentLinkedDeque<TransmitState>().apply {
+        add(transmitState)
+    }
 
     private data class TransmitState(
         val pttPressed: Boolean = false,
@@ -47,7 +58,8 @@ object ClientVoiceManager {
         val inputMode: VoiceConfig.InputMode = VoiceConfig.InputMode.VOICE_ACTIVATION,
         val x: Double = 0.0,
         val y: Double = 0.0,
-        val z: Double = 0.0
+        val z: Double = 0.0,
+        val effectiveFromNanos: Long = System.nanoTime()
     )
 
     var voiceClient: QuicVoiceClient? = null
@@ -55,8 +67,19 @@ object ClientVoiceManager {
     var player: AudioPlayer? = null
     var encoder: OpusEncoderWrapper? = null
     var adaptor: DynamicBitrateAdaptor? = null
-    private val decoders = java.util.concurrent.ConcurrentHashMap<UUID, OpusDecoderWrapper>()
-    private val lastReceivedSequences = java.util.concurrent.ConcurrentHashMap<UUID, Long>()
+    private class SpeakerStream {
+        var decoder = OpusDecoderWrapper(48000, 1)
+        val jitterBuffer = VoiceJitterBuffer()
+        var lastPacket: VoicePacket? = null
+    }
+
+    private val speakerStreams = java.util.concurrent.ConcurrentHashMap<UUID, SpeakerStream>()
+
+    init {
+        jitterExecutor.scheduleAtFixedRate(
+            ::drainJitterBuffers, 20L, 20L, TimeUnit.MILLISECONDS
+        )
+    }
 
     @Volatile var isConnected = false
         private set
@@ -97,6 +120,7 @@ object ClientVoiceManager {
         secretToken: UUID,
         certificateFingerprint: ByteArray
     ) {
+        val attempt = connectionAttempt.incrementAndGet()
         val targetHost = when {
             voiceHost.isNotBlank() -> voiceHost.trim()
             !fallbackServerAddress.isNullOrBlank() -> parseServerHost(fallbackServerAddress)
@@ -107,6 +131,10 @@ object ClientVoiceManager {
             java.net.InetAddress.getByName(targetHost)
         } catch (e: Exception) {
             logger.error("Failed to resolve voice server host '$targetHost': ${e.message}")
+            scheduleReconnect(
+                generation, playerUuid, fallbackServerAddress, voicePort,
+                voiceHost, secretToken, certificateFingerprint
+            )
             return
         }
         val serverAddress = InetSocketAddress(resolvedAddress, voicePort)
@@ -115,6 +143,11 @@ object ClientVoiceManager {
         val newEncoder = OpusEncoderWrapper(48000, 1, 32000)
         if (!newEncoder.isInitialized) {
             logger.error("Could not initialize the native Opus encoder")
+            newEncoder.close()
+            scheduleReconnect(
+                generation, playerUuid, fallbackServerAddress, voicePort,
+                voiceHost, secretToken, certificateFingerprint
+            )
             return
         }
         val newAdaptor = DynamicBitrateAdaptor(newEncoder)
@@ -124,7 +157,12 @@ object ClientVoiceManager {
             newAdaptor,
             secretToken,
             certificateFingerprint
-        )
+        ) { reason ->
+            handleUnexpectedDisconnect(
+                generation, attempt, playerUuid, fallbackServerAddress, voicePort,
+                voiceHost, secretToken, certificateFingerprint, reason
+            )
+        }
         val newRecorder = AudioRecorder(48000, 960)
         val newPlayer = AudioPlayer(48000)
         newClient.setPacketListener { packet ->
@@ -135,6 +173,11 @@ object ClientVoiceManager {
             newClient.stop()
             newRecorder.stop()
             newPlayer.stopAll()
+            newEncoder.close()
+            scheduleReconnect(
+                generation, playerUuid, fallbackServerAddress, voicePort,
+                voiceHost, secretToken, certificateFingerprint
+            )
             return
         }
         synchronized(this) {
@@ -142,6 +185,7 @@ object ClientVoiceManager {
                 newClient.stop()
                 newRecorder.stop()
                 newPlayer.stopAll()
+                newEncoder.close()
                 return
             }
             encoder = newEncoder
@@ -150,12 +194,79 @@ object ClientVoiceManager {
             recorder = newRecorder
             player = newPlayer
             isConnected = true
+            reconnectScheduled.set(false)
         }
         startTransmitLoop(generation, newRecorder, newClient, newEncoder)
         logger.info("ClientVoiceManager connected to voice server (resolved: ${resolvedAddress.hostAddress}:${serverAddress.port})")
         Minecraft.getInstance().tell {
             if (generation == connectionGeneration.get()) {
                 PacketDistributor.sendToServer(ModNetwork.C2SVoiceSecretPayload(secretToken))
+            }
+        }
+    }
+
+    private fun handleUnexpectedDisconnect(
+        generation: Long,
+        attempt: Long,
+        playerUuid: UUID,
+        fallbackServerAddress: String?,
+        voicePort: Int,
+        voiceHost: String,
+        secretToken: UUID,
+        certificateFingerprint: ByteArray,
+        reason: String
+    ) {
+        if (generation != connectionGeneration.get() || attempt != connectionAttempt.get()) return
+        logger.warn("Voice transport disconnected; scheduling reconnect: $reason")
+        synchronized(this) {
+            if (generation != connectionGeneration.get() || attempt != connectionAttempt.get()) return
+            transmitRunning = false
+            transmitThread?.interrupt()
+            transmitThread = null
+            recorder?.stop()
+            player?.stopAll()
+            encoder?.close()
+            speakerStreams.values.forEach { it.decoder.close() }
+            speakerStreams.clear()
+            voiceClient = null
+            recorder = null
+            player = null
+            encoder = null
+            adaptor = null
+            isConnected = false
+        }
+        scheduleReconnect(
+            generation, playerUuid, fallbackServerAddress, voicePort,
+            voiceHost, secretToken, certificateFingerprint
+        )
+    }
+
+    private fun scheduleReconnect(
+        generation: Long,
+        playerUuid: UUID,
+        fallbackServerAddress: String?,
+        voicePort: Int,
+        voiceHost: String,
+        secretToken: UUID,
+        certificateFingerprint: ByteArray
+    ) {
+        if (generation != connectionGeneration.get() ||
+            !reconnectScheduled.compareAndSet(false, true)
+        ) return
+        connectionExecutor.execute {
+            try {
+                Thread.sleep(1_000L)
+                if (generation == connectionGeneration.get()) {
+                    reconnectScheduled.set(false)
+                    connectInternal(
+                        generation, playerUuid, fallbackServerAddress, voicePort,
+                        voiceHost, secretToken, certificateFingerprint
+                    )
+                }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } finally {
+                if (generation != connectionGeneration.get()) reconnectScheduled.set(false)
             }
         }
     }
@@ -168,23 +279,44 @@ object ClientVoiceManager {
         if (localPlayer != null && packet.senderUuid == localPlayer.uuid) return
 
         logger.info("[AUDIO-RX] Received voice from ${packet.senderUuid}, opusLen=${packet.opusData.size}")
-        val decoder = decoders.computeIfAbsent(packet.senderUuid) { OpusDecoderWrapper(48000, 1) }
-        val previousSequence = lastReceivedSequences[packet.senderUuid]
-        if (previousSequence != null && packet.sequenceNumber <= previousSequence) return
-        if (previousSequence != null) {
-            val missing = (packet.sequenceNumber - previousSequence - 1).coerceIn(0, 3)
-            repeat(missing.toInt()) {
-                val concealed = decoder.decode(null, 960)
-                player?.playAudio(
-                    packet.senderUuid, concealed, packet.posX, packet.posY, packet.posZ,
-                    packet.isRadio, packet.quality
-                )
+        val stream = speakerStreams.computeIfAbsent(packet.senderUuid) { SpeakerStream() }
+        synchronized(stream) {
+            if (stream.jitterBuffer.offer(packet)) {
+                stream.decoder.close()
+                stream.decoder = OpusDecoderWrapper(48000, 1)
+                stream.lastPacket = null
             }
         }
-        lastReceivedSequences[packet.senderUuid] = packet.sequenceNumber
-        val pcm = decoder.decode(packet.opusData, 960)
-        player?.playAudio(packet.senderUuid, pcm, packet.posX, packet.posY, packet.posZ, packet.isRadio, packet.quality)
-        NameTagIcons.setPlayerSpeaking(packet.senderUuid, true)
+    }
+
+    private fun drainJitterBuffers() {
+        speakerStreams.forEach { (speakerUuid, stream) ->
+            synchronized(stream) {
+                when (val result = stream.jitterBuffer.poll()) {
+                    is VoiceJitterBuffer.PollResult.Packet -> {
+                        val packet = result.packet
+                        stream.lastPacket = packet
+                        val pcm = stream.decoder.decode(packet.opusData, 960)
+                        player?.playAudio(
+                            speakerUuid, pcm, packet.posX, packet.posY, packet.posZ,
+                            packet.isRadio, packet.quality,
+                            packet.routeType == com.ruskserver.modernvoicechat.transport.VoiceRouteType.DIRECT
+                        )
+                        NameTagIcons.setPlayerSpeaking(speakerUuid, true)
+                    }
+                    VoiceJitterBuffer.PollResult.ConcealLoss -> {
+                        val packet = stream.lastPacket ?: return@synchronized
+                        val pcm = stream.decoder.decode(null, 960)
+                        player?.playAudio(
+                            speakerUuid, pcm, packet.posX, packet.posY, packet.posZ,
+                            packet.isRadio, packet.quality,
+                            packet.routeType == com.ruskserver.modernvoicechat.transport.VoiceRouteType.DIRECT
+                        )
+                    }
+                    VoiceJitterBuffer.PollResult.None -> Unit
+                }
+            }
+        }
     }
 
     private fun startTransmitLoop(
@@ -198,7 +330,7 @@ object ClientVoiceManager {
             while (transmitRunning && generation == connectionGeneration.get()) {
                 try {
                     val frame = source.readFrame(timeoutMs = 25L) ?: continue
-                    val state = transmitState
+                    val state = stateAtCapture(frame.capturedAtNanos)
                     if (state.muted) {
                         VoiceHudOverlay.isSpeakingCurrent = false
                         continue
@@ -240,6 +372,21 @@ object ClientVoiceManager {
         }
     }
 
+    private fun publishTransmitState(state: TransmitState) {
+        transmitState = state
+        transmitStateHistory.addLast(state)
+        while (transmitStateHistory.size > 8) transmitStateHistory.pollFirst()
+    }
+
+    private fun stateAtCapture(capturedAtNanos: Long): TransmitState {
+        val iterator = transmitStateHistory.descendingIterator()
+        while (iterator.hasNext()) {
+            val state = iterator.next()
+            if (state.effectiveFromNanos <= capturedAtNanos) return state
+        }
+        return transmitStateHistory.peekFirst() ?: transmitState
+    }
+
     // ===========================================================================
 
     /**
@@ -255,6 +402,8 @@ object ClientVoiceManager {
     fun startLoopback() {
         if (loopbackRunning) return
         stopLoopback()
+        publishTransmitState(transmitState.copy(muted = true, effectiveFromNanos = System.nanoTime()))
+        recorder?.discardPendingFrames()
 
         // ---- 入力側: AudioRecorder を用意 ----
         val localRecorder: AudioRecorder
@@ -276,6 +425,7 @@ object ClientVoiceManager {
             recorderOwnedByLoopback = true
             logger.info("Loopback: started new AudioRecorder")
         }
+        val loopbackSubscription = localRecorder.subscribe()
 
         // ---- 出力側: 専用 SourceDataLine を開く ----
         val format = AudioFormat(48000f, 16, 1, true, false)
@@ -298,6 +448,7 @@ object ClientVoiceManager {
             l
         } catch (e: Exception) {
             logger.error("Loopback: failed to open speaker line", e)
+            loopbackSubscription.close()
             if (recorderOwnedByLoopback) { recorder?.stop(); recorder = null }
             return
         }
@@ -311,7 +462,7 @@ object ClientVoiceManager {
             while (loopbackRunning && !Thread.currentThread().isInterrupted) {
                 try {
                     // readFrame で 1 フレーム取得（最大 30ms 待機）
-                    val framePair = localRecorder.readFrame(timeoutMs = 30L)
+                    val framePair = loopbackSubscription.readFrame(timeoutMs = 30L)
 
                     if (framePair != null) {
                         val (pcm, isSpeaking) = framePair
@@ -357,6 +508,11 @@ object ClientVoiceManager {
             }
 
             VoiceHudOverlay.isSpeakingCurrent = false
+            loopbackSubscription.close()
+            if (recorderOwnedByLoopback) {
+                localRecorder.stop()
+                if (recorder === localRecorder) recorder = null
+            }
             logger.info("Mic loopback thread stopped")
         }, "ModernVoiceChat-LoopbackThread").also {
             it.isDaemon = true
@@ -380,7 +536,7 @@ object ClientVoiceManager {
 
         // 1. マイクテストモードの管理（ループバックは専用スレッドが担当）
         if (VoiceConfig.isMicTestingEnabled) {
-            transmitState = transmitState.copy(muted = true)
+            publishTransmitState(transmitState.copy(muted = true, effectiveFromNanos = System.nanoTime()))
             if (!loopbackRunning) startLoopback()
             return
         } else {
@@ -392,10 +548,10 @@ object ClientVoiceManager {
         if (!isConnected || voiceClient == null) return
         val isPttPressed = KeyMappings.PUSH_TO_TALK.isDown
         val isHoldingRadio = localPlayer.isUsingItem && localPlayer.useItem.item is com.ruskserver.modernvoicechat.item.RadioItem
-        transmitState = TransmitState(
+        publishTransmitState(TransmitState(
             isPttPressed, isHoldingRadio, VoiceConfig.isMicMuted,
             VoiceConfig.inputMode, localPlayer.x, localPlayer.y, localPlayer.z
-        )
+        ))
         if (VoiceConfig.isMicMuted) {
             recorder?.discardPendingFrames()
             VoiceHudOverlay.isSpeakingCurrent = false
@@ -410,6 +566,8 @@ object ClientVoiceManager {
     @Synchronized
     fun disconnect() {
         connectionGeneration.incrementAndGet()
+        connectionAttempt.incrementAndGet()
+        reconnectScheduled.set(false)
         transmitRunning = false
         transmitThread?.interrupt()
         transmitThread = null
@@ -419,9 +577,8 @@ object ClientVoiceManager {
             recorder?.stop()
             player?.stopAll()
             encoder?.close()
-            decoders.values.forEach { it.close() }
-            decoders.clear()
-            lastReceivedSequences.clear()
+            speakerStreams.values.forEach { it.decoder.close() }
+            speakerStreams.clear()
             recorder = null
             player = null
             encoder = null
@@ -436,9 +593,8 @@ object ClientVoiceManager {
         player = null
         encoder?.close()
         encoder = null
-        decoders.values.forEach { it.close() }
-        decoders.clear()
-        lastReceivedSequences.clear()
+        speakerStreams.values.forEach { it.decoder.close() }
+        speakerStreams.clear()
         adaptor = null
         isConnected = false
         VoiceHudOverlay.isSpeakingCurrent = false

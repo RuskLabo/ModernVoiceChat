@@ -3,6 +3,12 @@ package com.ruskserver.modernvoicechat.transport
 import java.nio.ByteBuffer
 import java.util.UUID
 
+enum class VoiceRouteType {
+    PROXIMITY,
+    RADIO,
+    DIRECT
+}
+
 /**
  * QUICトランスポート層で送受信される音声データパケット構造。
  */
@@ -14,7 +20,9 @@ data class VoicePacket(
     val posY: Double = 0.0,
     val posZ: Double = 0.0,
     val isRadio: Boolean = false,
-    val quality: Float = 1.0f
+    val quality: Float = 1.0f,
+    val sessionEpoch: Long = 0L,
+    val routeType: VoiceRouteType = VoiceRouteType.PROXIMITY
 ) {
     fun toBytes(): ByteArray {
         require(opusData.size <= MAX_OPUS_DATA_SIZE) {
@@ -29,6 +37,8 @@ data class VoicePacket(
         buffer.putDouble(posZ)
         buffer.put(if (isRadio) 1.toByte() else 0.toByte())
         buffer.putFloat(quality)
+        buffer.putLong(sessionEpoch)
+        buffer.put(routeType.ordinal.toByte())
         buffer.putInt(opusData.size)
         buffer.put(opusData)
         return buffer.array()
@@ -36,7 +46,7 @@ data class VoicePacket(
 
     companion object {
         const val MAX_OPUS_DATA_SIZE = 4000
-        const val HEADER_SIZE = 16 + 8 + 24 + 1 + 4 + 4
+        const val HEADER_SIZE = 16 + 8 + 24 + 1 + 4 + 8 + 1 + 4
 
         fun fromBytes(bytes: ByteArray): VoicePacket {
             require(bytes.size >= HEADER_SIZE) {
@@ -51,6 +61,11 @@ data class VoicePacket(
             val z = buffer.double
             val isRadio = buffer.get() != 0.toByte()
             val quality = buffer.float
+            val sessionEpoch = buffer.long
+            val routeOrdinal = buffer.get().toInt()
+            require(routeOrdinal in VoiceRouteType.entries.indices) {
+                "Invalid voice route type: $routeOrdinal"
+            }
             val len = buffer.int
             require(len in 0..MAX_OPUS_DATA_SIZE) {
                 "Invalid Opus payload length: $len"
@@ -60,7 +75,10 @@ data class VoicePacket(
             }
             val opus = ByteArray(len)
             buffer.get(opus)
-            return VoicePacket(UUID(most, least), seq, opus, x, y, z, isRadio, quality)
+            return VoicePacket(
+                UUID(most, least), seq, opus, x, y, z, isRadio, quality,
+                sessionEpoch, VoiceRouteType.entries[routeOrdinal]
+            )
         }
     }
 

@@ -13,7 +13,10 @@ import java.security.MessageDigest
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Executors
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 class QuicVoiceClient(
@@ -21,14 +24,17 @@ class QuicVoiceClient(
     val serverAddress: InetSocketAddress,
     val adaptor: DynamicBitrateAdaptor? = null,
     private val sessionToken: UUID = UUID(0L, 0L),
-    private val expectedCertificateFingerprint: ByteArray? = null
+    private val expectedCertificateFingerprint: ByteArray? = null,
+    private val connectionClosedListener: ((String) -> Unit)? = null
 ) {
     private val logger = LoggerFactory.getLogger(QuicVoiceClient::class.java)
     @Volatile private var packetListener: ((VoicePacket) -> Unit)? = null
     @Volatile var sendHandler: ((VoicePacket) -> Unit)? = null
     @Volatile private var running = false
     @Volatile private var connection: QuicClientConnection? = null
+    @Volatile private var datagramExecutor: ExecutorService? = null
     private val sequenceCounter = AtomicLong(0)
+    private val sessionEpoch = java.security.SecureRandom().nextLong()
     private var lastMetricsNanos = System.nanoTime()
     private var lastPacketsSent = 0L
     private var lastPacketsLost = 0L
@@ -61,11 +67,16 @@ class QuicVoiceClient(
             builder = builder.noServerCertificateCheck()
 
             val newConnection = builder.build()
+            connection = newConnection
             newConnection.setConnectionListener(object : ConnectionListener {
                 override fun disconnected(event: ConnectionTerminatedEvent) {
                     running = false
                     sendHandler = null
-                    logger.info("Voice QUIC connection closed: ${event.errorDescription() ?: event.closeReason()}")
+                    datagramExecutor?.shutdownNow()
+                    datagramExecutor = null
+                    val reason = event.errorDescription() ?: event.closeReason().toString()
+                    logger.info("Voice QUIC connection closed: $reason")
+                    connectionClosedListener?.invoke(reason)
                 }
             })
             newConnection.connect()
@@ -73,15 +84,22 @@ class QuicVoiceClient(
             check(newConnection.isDatagramExtensionEnabled) {
                 "Server did not negotiate QUIC Datagram Extension"
             }
-            newConnection.setDatagramHandler { bytes ->
+            val boundedDatagramExecutor = ThreadPoolExecutor(
+                1, 1, 0L, TimeUnit.MILLISECONDS,
+                ArrayBlockingQueue(128),
+                { task -> Thread(task, "ModernVoiceChat-ClientDatagrams").apply { isDaemon = true } },
+                ThreadPoolExecutor.DiscardPolicy()
+            )
+            datagramExecutor = boundedDatagramExecutor
+            newConnection.setDatagramHandler({ bytes ->
                 val packet = try {
                     VoicePacket.fromBytes(bytes)
                 } catch (e: IllegalArgumentException) {
-                    logger.warn("Rejected malformed QUIC voice datagram: ${e.message}")
+                    logger.debug("Rejected malformed QUIC voice datagram: ${e.message}")
                     return@setDatagramHandler
                 }
                 packetListener?.invoke(packet)
-            }
+            }, boundedDatagramExecutor)
 
             val authenticationExecutor = Executors.newSingleThreadExecutor { task ->
                 Thread(task, "ModernVoiceChat-QuicAuthentication").apply { isDaemon = true }
@@ -92,7 +110,10 @@ class QuicVoiceClient(
             } finally {
                 authenticationExecutor.shutdownNow()
             }
-            newConnection.keepAlive(10)
+            // Kwik 0.11 interprets this value as the total duration for which it
+            // should keep the connection alive, not as the ping interval. It
+            // derives the ping interval from half of the negotiated idle timeout.
+            newConnection.keepAlive(Int.MAX_VALUE)
             connection = newConnection
             running = true
             sendHandler = { voicePacket -> sendAudioPacket(voicePacket) }
@@ -151,8 +172,11 @@ class QuicVoiceClient(
         if (!running) return
         val quicConnection = connection ?: return
         try {
-            val packetWithoutCredentials = packet.copy(senderUuid = playerUuid)
-                .copy(sequenceNumber = sequenceCounter.incrementAndGet())
+            val packetWithoutCredentials = packet.copy(
+                senderUuid = playerUuid,
+                sequenceNumber = sequenceCounter.incrementAndGet(),
+                sessionEpoch = sessionEpoch
+            )
             val bytes = packetWithoutCredentials.toBytes()
             require(bytes.size <= quicConnection.maxDatagramDataSize()) {
                 "Voice packet exceeds negotiated QUIC datagram size"
@@ -186,6 +210,8 @@ class QuicVoiceClient(
     fun stop() {
         running = false
         sendHandler = null
+        datagramExecutor?.shutdownNow()
+        datagramExecutor = null
         try {
             connection?.closeAndWait(Duration.ofSeconds(2))
         } catch (_: Exception) {
